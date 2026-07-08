@@ -41,6 +41,15 @@ h1::before {
   box-shadow: 0 0 8px var(--accent);
 }
 .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 22px; }
+.filter-row { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; color: var(--text-dim); }
+.filter-row select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
 .toolbar {
   display: flex;
   align-items: center;

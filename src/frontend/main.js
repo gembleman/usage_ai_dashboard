@@ -1,13 +1,12 @@
 async function loadAll() {
   document.getElementById('status').textContent = '불러오는 중...';
   try {
-    const [usage, accounts, rateLimits] = await Promise.all([
+    const [usage, rateLimits] = await Promise.all([
       fetchJson('/api/usage'),
-      fetchJson('/api/accounts'),
       fetchJson('/api/rate_limits'),
     ]);
     renderTrendChart(usage);
-    renderAccountTable(accounts, usage);
+    renderAccountTable(usage);
     renderModelChart(usage);
     renderUsageTable(usage);
     renderRateLimits(rateLimits);
@@ -35,6 +34,16 @@ document.getElementById('sourceTabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab-btn');
   if (!btn) return;
   setUsageTableSource(btn.dataset.source);
+});
+
+document.getElementById('accountSelect').addEventListener('change', (e) => {
+  setUsageTableAccount(e.target.value);
+});
+
+document.getElementById('accountRangeTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  setAccountRange(btn.dataset.range);
 });
 
 loadAll();

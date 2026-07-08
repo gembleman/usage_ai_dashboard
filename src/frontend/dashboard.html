@@ -18,6 +18,13 @@
 <div class="grid-2">
   <div class="panel">
     <h2>계정별 합계</h2>
+    <div class="tabs" id="accountRangeTabs">
+      <button class="tab-btn" data-range="1d">최근 1일</button>
+      <button class="tab-btn" data-range="7d">최근 1주</button>
+      <button class="tab-btn" data-range="30d">최근 1개월</button>
+      <button class="tab-btn" data-range="365d">최근 1년</button>
+      <button class="tab-btn active" data-range="all">전체</button>
+    </div>
     <div class="table-scroll">
       <table id="accountTable">
         <thead>
@@ -50,11 +57,17 @@
     <button class="tab-btn" data-source="codex">Codex</button>
     <button class="tab-btn" data-source="claude_code">Claude Code</button>
   </div>
+  <div class="filter-row">
+    <label for="accountSelect">계정:</label>
+    <select id="accountSelect">
+      <option value="all">전체 (합산)</option>
+    </select>
+  </div>
   <div class="table-scroll">
     <table id="usageTable">
       <thead>
         <tr>
-          <th>소스</th><th>계정</th><th>날짜</th><th>모델</th>
+          <th>소스</th><th>계정</th><th>날짜</th>
           <th>입력</th><th>캐시 입력</th><th>출력</th><th>합계</th><th>턴 수</th><th>예상 비용</th>
         </tr>
       </thead>
