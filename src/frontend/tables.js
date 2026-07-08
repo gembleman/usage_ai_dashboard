@@ -135,7 +135,10 @@ function filterByAccount(rows, account) {
 
 function applyUsageTableFilters() {
   const { raw, source, account } = usageTableState;
-  const filtered = filterByAccount(filterBySource(raw, source), account);
+  // "<synthetic>"은 Claude Code가 토큰 사용 없는 턴(API 에러 등)에 남기는
+  // 플레이스홀더 모델명이라 상세 내역에서는 노이즈이므로 제외한다.
+  const real = raw.filter(r => r.model !== '<synthetic>');
+  const filtered = filterByAccount(filterBySource(real, source), account);
   usageTableState.sorted = aggregateUsageRows(filtered);
   usageTableState.page = 1;
   renderUsageTablePage();

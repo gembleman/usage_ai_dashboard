@@ -1,9 +1,49 @@
+// 현재 렌더링된 트렌드 차트의 데이터. 포인트 툴팁이 이벤트 위임 핸들러에서
+// 참조한다 (포인트가 수천 개일 수 있어 각 원에 리스너를 붙이지 않는다).
+let trendChartState = null;
+
+function trendPointFromEvent(evt) {
+  if (!trendChartState || !evt.target || !evt.target.closest) return null;
+  return evt.target.closest('circle.pt');
+}
+
+function showTrendPointTooltip(evt, c) {
+  const { dates, keys, byDateSeries } = trendChartState;
+  const d = dates[Number(c.getAttribute('data-date-idx'))];
+  const k = keys[Number(c.getAttribute('data-key-idx'))];
+  showTooltip(evt, `<b>${escapeHtml(k)}</b><br>${escapeHtml(d)}<br>${fmtKo(byDateSeries[d][k])} 토큰`);
+}
+
+// 리스너는 컨테이너에 한 번만 위임한다. 렌더링마다 innerHTML을 갈아끼워도
+// 컨테이너 자체에 붙은 리스너는 유지된다. (스크립트는 defer라 DOM 준비됨)
+{
+  const container = document.getElementById('trendChart');
+  const onPoint = evt => {
+    const c = trendPointFromEvent(evt);
+    if (c) showTrendPointTooltip(evt, c);
+  };
+  const offPoint = evt => {
+    if (trendPointFromEvent(evt)) hideTooltip();
+  };
+  container.addEventListener('mouseover', onPoint);
+  container.addEventListener('mousemove', onPoint);
+  container.addEventListener('mouseout', offPoint);
+  container.addEventListener('focusin', onPoint);
+  container.addEventListener('focusout', offPoint);
+  container.addEventListener('touchstart', evt => {
+    const c = trendPointFromEvent(evt);
+    if (c) showTrendPointTooltip(evt.touches[0] || evt, c);
+  }, { passive: true });
+  container.addEventListener('touchend', offPoint);
+}
+
 function renderTrendChart(rows) {
   const container = document.getElementById('trendChart');
   const legend = document.getElementById('trendLegend');
   container.innerHTML = '';
   legend.innerHTML = '';
   if (rows.length === 0) {
+    trendChartState = null;
     container.innerHTML = '<div class="empty-note">데이터가 없습니다.</div>';
     return;
   }
@@ -17,8 +57,13 @@ function renderTrendChart(rows) {
     const k = seriesKey(r);
     byDateSeries[r.date][k] = (byDateSeries[r.date][k] || 0) + r.total_tokens;
   }
+  trendChartState = { dates, keys, byDateSeries };
 
-  const width = Math.max(600, dates.length * 60);
+  // 날짜가 많을수록 포인트 간격을 좁혀 SVG 전체 폭을 억제한다
+  // (365일 × 60px ≈ 22,000px짜리 SVG는 렌더링/스크롤이 무겁다).
+  const pxPerDate = dates.length <= 31 ? 60 : dates.length <= 120 ? 24 : 10;
+  const pointRadius = dates.length <= 120 ? 3 : 2;
+  const width = Math.max(600, dates.length * pxPerDate);
   const height = 260;
   const padL = 56, padR = 16, padT = 12, padB = 28;
   const plotW = width - padL - padR;
@@ -77,32 +122,13 @@ function renderTrendChart(rows) {
       if (raw === undefined) return; // 데이터 없는 날짜는 포인트를 생략한다.
       const px = x(i), py = yFor(raw);
       const label = `${k} — ${d}: ${fmtKo(raw)} 토큰`;
-      svg += `<circle cx="${px}" cy="${py}" r="3" fill="${color}" tabindex="0" ` +
+      svg += `<circle cx="${px}" cy="${py}" r="${pointRadius}" fill="${color}" tabindex="0" ` +
         `data-date-idx="${i}" data-key-idx="${keyIdx}" class="pt" aria-label="${escapeHtml(label)}"><title>${escapeHtml(label)}</title></circle>`;
     });
   });
 
   svg += `</svg>`;
   container.innerHTML = svg;
-
-  const showPointTooltip = (evt, c) => {
-    const i = Number(c.getAttribute('data-date-idx'));
-    const keyIdx = Number(c.getAttribute('data-key-idx'));
-    const d = dates[i];
-    const k = keys[keyIdx];
-    const val = byDateSeries[d][k];
-    showTooltip(evt, `<b>${escapeHtml(k)}</b><br>${escapeHtml(d)}<br>${fmtKo(val)} 토큰`);
-  };
-
-  container.querySelectorAll('circle.pt').forEach(c => {
-    c.addEventListener('mouseenter', evt => showPointTooltip(evt, c));
-    c.addEventListener('mousemove', evt => showPointTooltip(evt, c));
-    c.addEventListener('mouseleave', hideTooltip);
-    c.addEventListener('focus', evt => showPointTooltip(evt, c));
-    c.addEventListener('blur', hideTooltip);
-    c.addEventListener('touchstart', evt => { showPointTooltip(evt.touches[0] || evt, c); }, { passive: true });
-    c.addEventListener('touchend', hideTooltip);
-  });
 
   keys.forEach(k => {
     const color = colorFor(k, keys);

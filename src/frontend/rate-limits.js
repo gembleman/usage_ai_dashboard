@@ -11,6 +11,43 @@ const SOURCE_LABELS = {
   claude_code: 'Claude Code',
 };
 
+// 남은 초를 "N일 N시간" / "N시간 N분" / "N분 N초" / "N초" 형태의 한국어로 변환.
+// 이미 지난 시각이면 null을 반환한다.
+function formatRemaining(sec) {
+  if (sec <= 0) return null;
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (d > 0) return `${d}일 ${h}시간`;
+  if (h > 0) return `${h}시간 ${m}분`;
+  if (m > 0) return `${m}분 ${s}초`;
+  return `${s}초`;
+}
+
+// data-resets-at(epoch 초)을 가진 모든 카운트다운 요소를 현재 시각 기준으로 갱신.
+// 렌더링과 분리된 전역 타이머가 매초 호출하므로, 재렌더링 없이도 시간이 흐른다.
+function updateResetCountdowns() {
+  if (document.hidden) return; // 백그라운드 탭에서는 갱신 생략 (복귀 시 visibilitychange로 즉시 갱신)
+  const now = Date.now() / 1000;
+  for (const el of document.querySelectorAll('.rl-countdown')) {
+    const remaining = formatRemaining(Number(el.dataset.resetsAt) - now);
+    if (remaining === null) {
+      // 초기화 시각이 지났지만 아직 새 스냅샷을 받지 못한 상태.
+      el.textContent = '초기화됨 — 새로고침으로 갱신';
+      el.classList.add('rl-countdown-done');
+    } else {
+      el.textContent = `${remaining} 남음`;
+      el.classList.remove('rl-countdown-done');
+    }
+  }
+}
+
+setInterval(updateResetCountdowns, 1000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) updateResetCountdowns();
+});
+
 function renderRateLimits(snapshots) {
   const container = document.getElementById('rateLimits');
   container.innerHTML = '';
@@ -45,11 +82,15 @@ function renderRateLimits(snapshots) {
     const windowHtml = (label, w) => {
       if (!w) return '';
       const pct = Math.min(100, w.used_percent);
-      const resets = new Date(w.resets_at * 1000).toLocaleString('ko-KR');
+      // resets_at이 0이면 초기화 시각 정보가 없는 것 (백엔드가 알 수 없을 때
+      // 0으로 폴백) — 1970년 표기와 오탐 카운트다운 대신 행 자체를 생략한다.
+      const resetLine = w.resets_at
+        ? `<div class="rl-window-label"><span class="rl-countdown" data-resets-at="${w.resets_at}"></span><span>${escapeHtml(new Date(w.resets_at * 1000).toLocaleString('ko-KR'))} 초기화</span></div>`
+        : '';
       return `<div class="rl-window">
         <div class="rl-window-label"><span>${escapeHtml(label)} (${w.window_minutes}분 윈도우)</span><span>${w.used_percent.toFixed(1)}% 사용</span></div>
         <div class="meter" role="img" aria-label="${escapeHtml(label)} 사용률 ${w.used_percent.toFixed(1)}%"><div class="meter-fill" style="width:${pct}%;background:${meterColor(pct)}"></div></div>
-        <div class="rl-window-label"><span></span><span>${escapeHtml(resets)} 초기화</span></div>
+        ${resetLine}
       </div>`;
     };
 
@@ -78,4 +119,6 @@ function renderRateLimits(snapshots) {
     card.innerHTML = html;
     container.appendChild(card);
   }
+  // 다음 타이머 틱(최대 1초)을 기다리지 않고 즉시 카운트다운을 채운다.
+  updateResetCountdowns();
 }

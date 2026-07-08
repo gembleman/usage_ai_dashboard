@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, RwLock};
 
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -15,8 +16,8 @@ use serde::Serialize;
 
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::model::{RateLimitSnapshot, Source, UsageRecord};
-use crate::{aggregate, aggregate_per_account, parse_all, AggTotals};
+use crate::model::{Source, UsageRecord};
+use crate::{aggregate, parse_all, AggTotals};
 
 const DASHBOARD_HTML: &str = include_str!("frontend/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("frontend/styles.css");
@@ -36,8 +37,13 @@ fn static_asset(content_type: &'static str, body: &'static str) -> impl IntoResp
 }
 
 struct AppData {
-    records: Vec<UsageRecord>,
-    rate_limits: Vec<RateLimitSnapshot>,
+    /// Pre-serialized /api/usage body. The aggregation only changes when the
+    /// records change (startup / refresh), so it is computed once there
+    /// instead of on every request; `Bytes` clones are refcounted, so request
+    /// handlers hold the read lock only long enough to bump a refcount.
+    usage_json: Bytes,
+    /// Pre-serialized /api/rate_limits body, same lifecycle as `usage_json`.
+    rate_limits_json: Bytes,
     config: Config,
     include_dormant_claude: bool,
 }
@@ -79,59 +85,37 @@ fn agg_totals_to_row(
     }
 }
 
-#[derive(Serialize)]
-struct AccountTotalRow {
-    source: String,
-    account: String,
-    input_tokens: u64,
-    cached_input_tokens: u64,
-    output_tokens: u64,
-    reasoning_output_tokens: u64,
-    total_tokens: u64,
-    turns: u64,
+/// Serialize a value into a pre-built JSON response body.
+fn to_json_bytes<T: Serialize>(value: &T) -> Bytes {
+    Bytes::from(serde_json::to_vec(value).expect("JSON serialization failed"))
 }
 
-/// GET /api/usage - full source x account x date x model aggregation.
-async fn get_usage(State(state): State<SharedState>) -> impl IntoResponse {
-    let data = state.read().unwrap();
-    let agg = aggregate(&data.records);
+/// Build the /api/usage body: full source x account x date x model aggregation.
+fn build_usage_json(records: &[UsageRecord]) -> Bytes {
+    let agg = aggregate(records);
     let rows: Vec<AggRow> = agg
         .iter()
         .map(|((source, account, date, model), totals)| {
             agg_totals_to_row(*source, account, date, model, totals)
         })
         .collect();
-    Json(rows)
+    to_json_bytes(&rows)
 }
 
-/// GET /api/accounts - per (source, account) totals, summed across all dates/models.
-async fn get_accounts(State(state): State<SharedState>) -> impl IntoResponse {
-    let data = state.read().unwrap();
-    let agg = aggregate(&data.records);
+const JSON_CONTENT_TYPE: &str = "application/json";
 
-    let per_account = aggregate_per_account(&agg);
-
-    let rows: Vec<AccountTotalRow> = per_account
-        .iter()
-        .map(|((source, account), totals)| AccountTotalRow {
-            source: source.to_string(),
-            account: account.clone(),
-            input_tokens: totals.input_tokens,
-            cached_input_tokens: totals.cached_input_tokens,
-            output_tokens: totals.output_tokens,
-            reasoning_output_tokens: totals.reasoning_output_tokens,
-            total_tokens: totals.total_tokens,
-            turns: totals.count,
-        })
-        .collect();
-    Json(rows)
+/// GET /api/usage - full source x account x date x model aggregation,
+/// precomputed at startup / refresh.
+async fn get_usage(State(state): State<SharedState>) -> impl IntoResponse {
+    let body = state.read().unwrap().usage_json.clone();
+    ([(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)], body)
 }
 
 /// GET /api/rate_limits - latest rate limit snapshot per (source, account).
 /// Codex snapshots come from session logs; claude_code from the OAuth usage API.
 async fn get_rate_limits(State(state): State<SharedState>) -> impl IntoResponse {
-    let data = state.read().unwrap();
-    Json(data.rate_limits.clone())
+    let body = state.read().unwrap().rate_limits_json.clone();
+    ([(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)], body)
 }
 
 #[derive(Serialize)]
@@ -150,35 +134,40 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
         (data.config.clone(), data.include_dormant_claude)
     };
 
-    // parse_all is synchronous and I/O-heavy; run it off the async runtime.
+    // parse_all is synchronous and I/O-heavy; run it (and the JSON
+    // re-serialization) off the async runtime.
     let config_dir = config.config_dir().map(|p| p.to_path_buf());
-    let (records, rate_limits, _summary) = tokio::task::spawn_blocking(move || {
-        let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
-        let merged = match Cache::open(config_dir.as_deref()) {
-            Ok(mut cache) => match cache.save(&records, &rate_limits) {
-                Ok(()) => cache.load().ok().flatten(),
+    let (usage_json, rate_limits_json, record_count, rate_limit_count) =
+        tokio::task::spawn_blocking(move || {
+            let (records, rate_limits, _summary) = parse_all(&config, include_dormant_claude);
+            let merged = match Cache::open(config_dir.as_deref()) {
+                Ok(mut cache) => match cache.save(&records, &rate_limits) {
+                    Ok(()) => cache.load().ok().flatten(),
+                    Err(e) => {
+                        eprintln!("Warning: failed to write cache: {e}");
+                        None
+                    }
+                },
                 Err(e) => {
-                    eprintln!("Warning: failed to write cache: {e}");
+                    eprintln!("Warning: failed to open cache: {e}");
                     None
                 }
-            },
-            Err(e) => {
-                eprintln!("Warning: failed to open cache: {e}");
-                None
-            }
-        };
-        // If the cache is unavailable, fall back to just the fresh parse.
-        let (records, rate_limits) = merged.unwrap_or((records, rate_limits));
-        (records, rate_limits, summary)
-    })
-    .await
-    .expect("parse task panicked");
-    let record_count = records.len();
-    let rate_limit_count = rate_limits.len();
+            };
+            // If the cache is unavailable, fall back to just the fresh parse.
+            let (records, rate_limits) = merged.unwrap_or((records, rate_limits));
+            (
+                build_usage_json(&records),
+                to_json_bytes(&rate_limits),
+                records.len(),
+                rate_limits.len(),
+            )
+        })
+        .await
+        .expect("parse task panicked");
 
     let mut data = state.write().unwrap();
-    data.records = records;
-    data.rate_limits = rate_limits;
+    data.usage_json = usage_json;
+    data.rate_limits_json = rate_limits_json;
 
     (
         StatusCode::OK,
@@ -225,8 +214,8 @@ pub fn run(config: Config, include_dormant_claude: bool) {
 
     let config_port = config.port();
     let state: SharedState = Arc::new(RwLock::new(AppData {
-        records,
-        rate_limits,
+        usage_json: build_usage_json(&records),
+        rate_limits_json: to_json_bytes(&rate_limits),
         config,
         include_dormant_claude,
     }));
@@ -258,7 +247,6 @@ pub fn run(config: Config, include_dormant_claude: bool) {
             get(move || async move { static_asset(JS_CONTENT_TYPE, JS_MAIN) }),
         )
         .route("/api/usage", get(get_usage))
-        .route("/api/accounts", get(get_accounts))
         .route("/api/rate_limits", get(get_rate_limits))
         .route("/api/refresh", post(post_refresh))
         .with_state(state);

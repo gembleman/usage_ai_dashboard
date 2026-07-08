@@ -222,12 +222,48 @@ pub fn parse_all(
     config: &Config,
     include_dormant_claude: bool,
 ) -> (Vec<UsageRecord>, Vec<RateLimitSnapshot>, ParseSummary) {
+    let codex_accounts = config.codex_accounts(include_dormant_claude);
+    let claude_accounts = config.claude_accounts(include_dormant_claude);
+
+    // Accounts are independent of each other, so parse each on its own
+    // thread. This matters most for Claude Code, where the rate-limit fetch
+    // is a blocking HTTP call (8s timeout) that would otherwise serialize
+    // per account. Joining in spawn order keeps the summary deterministic.
+    let (codex_results, claude_results) = std::thread::scope(|s| {
+        let codex_handles: Vec<_> = codex_accounts
+            .iter()
+            .map(|account| s.spawn(move || codex::parse_account(account)))
+            .collect();
+        let claude_handles: Vec<_> = claude_accounts
+            .iter()
+            .map(|account| {
+                s.spawn(move || {
+                    let result = claude_code::parse_account(account, true);
+                    // Rate limits for Claude Code come from the Anthropic OAuth
+                    // usage API (not the local transcripts). Any failure yields
+                    // None and is skipped.
+                    let snapshot = claude_code::fetch_rate_limit_snapshot(account);
+                    (result, snapshot)
+                })
+            })
+            .collect();
+        (
+            codex_handles
+                .into_iter()
+                .map(|h| h.join().expect("codex parse thread panicked"))
+                .collect::<Vec<_>>(),
+            claude_handles
+                .into_iter()
+                .map(|h| h.join().expect("claude parse thread panicked"))
+                .collect::<Vec<_>>(),
+        )
+    });
+
     let mut all_records: Vec<UsageRecord> = Vec::new();
     let mut rate_limit_snapshots: Vec<RateLimitSnapshot> = Vec::new();
     let mut per_account: Vec<(String, usize)> = Vec::new();
 
-    for account in config.codex_accounts(include_dormant_claude) {
-        let result = codex::parse_account(&account);
+    for (account, result) in codex_accounts.iter().zip(codex_results) {
         per_account.push((format!("codex/{}", account.name), result.records.len()));
         all_records.extend(result.records);
         if let Some(snap) = result.rate_limit_snapshot {
@@ -235,16 +271,13 @@ pub fn parse_all(
         }
     }
 
-    for account in config.claude_accounts(include_dormant_claude) {
-        let result = claude_code::parse_account(&account, true);
+    for (account, (result, snapshot)) in claude_accounts.iter().zip(claude_results) {
         per_account.push((
             format!("claude_code/{}", account.name),
             result.records.len(),
         ));
         all_records.extend(result.records);
-        // Rate limits for Claude Code come from the Anthropic OAuth usage API
-        // (not the local transcripts). Any failure yields None and is skipped.
-        if let Some(snap) = claude_code::fetch_rate_limit_snapshot(&account) {
+        if let Some(snap) = snapshot {
             rate_limit_snapshots.push(snap);
         }
     }

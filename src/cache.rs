@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection};
 
 use crate::model::{
@@ -28,7 +28,11 @@ const DB_FILE_NAME: &str = "cache.sqlite3";
 /// same-named accounts from different CLIs no longer collide.
 /// v3: `rate_limits` gains Claude Code-only columns: per-model weekly
 /// windows (opus_*/sonnet_*) and extra-usage credits (extra_usage_*).
-const SCHEMA_VERSION: i64 = 3;
+/// v4: `usage_records.timestamp` normalized to fixed-width UTC millis
+/// ("YYYY-MM-DDTHH:MM:SS.sssZ") so plain string comparison is
+/// chronological and the delete-window query can use the index instead
+/// of wrapping both sides in `datetime()` (a full-table scan).
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS usage_records (
@@ -67,6 +71,8 @@ const SCHEMA_SQL: &str = "
         extra_usage_used_credits REAL,
         extra_usage_utilization REAL
     );
+    CREATE INDEX IF NOT EXISTS idx_usage_records_source_account_ts
+        ON usage_records(source, account, timestamp);
 ";
 
 /// Bring an existing DB up to `SCHEMA_VERSION`. Runs on every `open()`.
@@ -112,6 +118,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             let _ = conn.execute(&format!("ALTER TABLE rate_limits ADD COLUMN {col}"), []);
         }
     }
+    if version < 4 {
+        // Rewrite pre-v4 timestamps (variable precision, "+00:00" suffix) to
+        // the fixed-width millisecond UTC format `to_db_timestamp` writes.
+        // COALESCE keeps any value strftime can't parse instead of NULLing it.
+        conn.execute(
+            "UPDATE usage_records
+             SET timestamp = COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', timestamp), timestamp)",
+            [],
+        )?;
+    }
     if version < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -134,6 +150,12 @@ impl Cache {
     }
 
     fn init(conn: Connection) -> rusqlite::Result<Cache> {
+        // WAL + NORMAL trades a little durability-on-power-loss for much
+        // faster writes; fine for a rebuildable cache. journal_mode returns a
+        // row (and reports "memory" for in-memory DBs), so query it instead
+        // of pragma_update.
+        let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA_SQL)?;
         migrate(&conn)?;
         Ok(Cache { conn })
@@ -171,16 +193,17 @@ impl Cache {
             }
         }
         {
-            // datetime() normalizes both sides so timestamps written with
-            // different fractional-second precision still compare
-            // chronologically rather than lexicographically.
+            // Timestamps are stored in a fixed-width UTC format (see
+            // `to_db_timestamp` / v4 migration), so plain string comparison
+            // is chronological and this DELETE can range-scan the
+            // (source, account, timestamp) index instead of full-scanning
+            // with datetime() on every row.
             let mut stmt = tx.prepare(
                 "DELETE FROM usage_records
-                 WHERE source = ?1 AND account = ?2
-                   AND datetime(timestamp) >= datetime(?3)",
+                 WHERE source = ?1 AND account = ?2 AND timestamp >= ?3",
             )?;
             for ((source, account), ts) in &earliest {
-                stmt.execute(params![source.to_string(), account, ts.to_rfc3339()])?;
+                stmt.execute(params![source.to_string(), account, to_db_timestamp(ts)])?;
             }
         }
         {
@@ -194,7 +217,7 @@ impl Cache {
                 stmt.execute(params![
                     r.source.to_string(),
                     r.account,
-                    r.timestamp.to_rfc3339(),
+                    to_db_timestamp(&r.timestamp),
                     r.model,
                     r.input_tokens as i64,
                     r.cached_input_tokens as i64,
@@ -332,6 +355,14 @@ impl Cache {
 
         Ok(Some((records, rate_limits)))
     }
+}
+
+/// Fixed-width UTC RFC3339 with millisecond precision, e.g.
+/// "2026-06-01T12:00:00.000Z". Must match the v4 migration's
+/// strftime('%Y-%m-%dT%H:%M:%fZ', ...) output so old and new rows compare
+/// lexicographically == chronologically.
+fn to_db_timestamp(t: &DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn parse_rfc3339(s: &str) -> DateTime<Utc> {
@@ -507,6 +538,52 @@ mod tests {
         assert_eq!(extra.monthly_limit, Some(5000.0));
         assert_eq!(extra.used_credits, Some(123.45));
         assert_eq!(extra.utilization, Some(2.5));
+    }
+
+    #[test]
+    fn migration_v4_normalizes_timestamps_for_string_comparison() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        // Pre-v4 rows: "+00:00" offset form, with and without fractional
+        // seconds. Left unmigrated these compare wrongly against the new
+        // "Z"-suffixed fixed-width format ('+' < '.') and would never be
+        // deleted by save()'s replace window, duplicating history.
+        conn.execute(
+            "INSERT INTO usage_records VALUES
+                ('codex', 'a', '2026-06-01T12:00:00+00:00', NULL, 10, 0, 0, 0, 10, 0),
+                ('codex', 'a', '2026-06-20T08:30:00.123456+00:00', NULL, 20, 0, 0, 0, 20, 0)",
+            [],
+        )
+        .unwrap();
+        let mut cache = Cache::init(conn).unwrap();
+
+        let mut stmt = cache
+            .conn
+            .prepare("SELECT timestamp FROM usage_records ORDER BY timestamp")
+            .unwrap();
+        let ts: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        drop(stmt);
+        assert_eq!(
+            ts,
+            vec![
+                "2026-06-01T12:00:00.000Z".to_string(),
+                "2026-06-20T08:30:00.123Z".to_string(),
+            ]
+        );
+
+        // New parse starting at day 15: the migrated day-20 row falls inside
+        // the replace window (string >=) and must be dropped; day 1 survives.
+        cache
+            .save(&[record(Source::Codex, "a", 15, 99)], &[])
+            .unwrap();
+        let (mut records, _) = cache.load().unwrap().unwrap();
+        records.sort_by_key(|r| r.timestamp);
+        let tokens: Vec<u64> = records.iter().map(|r| r.input_tokens).collect();
+        assert_eq!(tokens, vec![10, 99]);
     }
 
     #[test]
