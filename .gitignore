@@ -2,4 +2,5 @@
 /cache.sqlite3
 /docs
 *.md
+!README.md
 config.toml
