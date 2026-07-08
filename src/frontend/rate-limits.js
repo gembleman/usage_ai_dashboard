@@ -37,18 +37,19 @@ function renderRateLimits(snapshots) {
     const secondaryLabel = isClaude ? '주간 / 7일' : '2차 / 7일';
 
     let html = `<div class="rl-head">
-      <span class="rl-account"><span class="tag">${sourceLabel}</span>${snap.account}${snap.plan_type ? `<span class="tag">${snap.plan_type}</span>` : ''}</span>
-      <span class="rl-observed">${observed} 관측</span>
+      <span class="rl-account"><span class="tag">${escapeHtml(sourceLabel)}</span>${escapeHtml(snap.account)}${snap.plan_type ? `<span class="tag">${escapeHtml(snap.plan_type)}</span>` : ''}</span>
+      <span class="rl-observed">${escapeHtml(observed)} 관측</span>
     </div>`;
 
+    // 퍼센트 텍스트를 별도로 표기해 색상(정상/경고/위험)에만 의존하지 않도록 한다.
     const windowHtml = (label, w) => {
       if (!w) return '';
       const pct = Math.min(100, w.used_percent);
       const resets = new Date(w.resets_at * 1000).toLocaleString('ko-KR');
       return `<div class="rl-window">
-        <div class="rl-window-label"><span>${label} (${w.window_minutes}분 윈도우)</span><span>${w.used_percent.toFixed(1)}% 사용</span></div>
-        <div class="meter"><div class="meter-fill" style="width:${pct}%;background:${meterColor(pct)}"></div></div>
-        <div class="rl-window-label"><span></span><span>${resets} 초기화</span></div>
+        <div class="rl-window-label"><span>${escapeHtml(label)} (${w.window_minutes}분 윈도우)</span><span>${w.used_percent.toFixed(1)}% 사용</span></div>
+        <div class="meter" role="img" aria-label="${escapeHtml(label)} 사용률 ${w.used_percent.toFixed(1)}%"><div class="meter-fill" style="width:${pct}%;background:${meterColor(pct)}"></div></div>
+        <div class="rl-window-label"><span></span><span>${escapeHtml(resets)} 초기화</span></div>
       </div>`;
     };
 
@@ -65,14 +66,14 @@ function renderRateLimits(snapshots) {
         <div class="rl-window-label"><span>추가 사용 크레딧</span><span>${fmt(e.used_credits, 2)} / ${fmt(e.monthly_limit, 0)} 크레딧</span></div>`;
       if (e.utilization != null) {
         const pct = Math.min(100, e.utilization);
-        extraHtml += `<div class="meter"><div class="meter-fill" style="width:${pct}%;background:${meterColor(pct)}"></div></div>
+        extraHtml += `<div class="meter" role="img" aria-label="추가 사용 크레딧 사용률 ${e.utilization.toFixed(1)}%"><div class="meter-fill" style="width:${pct}%;background:${meterColor(pct)}"></div></div>
         <div class="rl-window-label"><span></span><span>${e.utilization.toFixed(1)}% 사용</span></div>`;
       }
       extraHtml += '</div>';
       html += extraHtml;
     }
     if (snap.rate_limit_reached_type) {
-      html += `<div class="rl-window-label" style="color:var(--bad)">한도 도달 유형: ${snap.rate_limit_reached_type}</div>`;
+      html += `<div class="rl-window-label" style="color:var(--bad)">한도 도달 유형: ${escapeHtml(snap.rate_limit_reached_type)}</div>`;
     }
     card.innerHTML = html;
     container.appendChild(card);

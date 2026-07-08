@@ -1,18 +1,58 @@
+// 지정된 컨테이너 id에 에러 메시지를 표시한다 (해당 패널이 의존하는 API가 실패한 경우).
+// <table> 요소는 직접 innerHTML을 대입하면 마크업이 깨지므로 tbody를 대상으로 한다.
+function showPanelError(containerId, message, colspan) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const noteHtml = `<div class="empty-note">${escapeHtml(message)}</div>`;
+  if (el.tagName === 'TABLE') {
+    const tbody = el.querySelector('tbody') || el;
+    tbody.innerHTML = colspan
+      ? `<tr><td colspan="${colspan}" class="empty-note">${escapeHtml(message)}</td></tr>`
+      : noteHtml;
+  } else {
+    el.innerHTML = noteHtml;
+  }
+}
+
+function showUsagePanelErrors(message) {
+  showPanelError('trendChart', message);
+  document.getElementById('trendLegend').innerHTML = '';
+  showPanelError('accountTable', message, 8);
+  showPanelError('modelChart', message);
+  document.getElementById('modelLegend').innerHTML = '';
+  showPanelError('usageTable', message, 10);
+  document.getElementById('usagePagination').innerHTML = '';
+}
+
 async function loadAll() {
   document.getElementById('status').textContent = '불러오는 중...';
-  try {
-    const [usage, rateLimits] = await Promise.all([
-      fetchJson('/api/usage'),
-      fetchJson('/api/rate_limits'),
-    ]);
-    renderTrendChart(usage);
-    renderAccountTable(usage);
-    renderModelChart(usage);
+
+  const [usageResult, rateLimitsResult] = await Promise.allSettled([
+    fetchJson('/api/usage'),
+    fetchJson('/api/rate_limits'),
+  ]);
+
+  if (usageResult.status === 'fulfilled') {
+    const usage = usageResult.value;
+    renderGlobalFilteredPanels(usage);
     renderUsageTable(usage);
-    renderRateLimits(rateLimits);
+  } else {
+    showUsagePanelErrors('사용량 데이터를 불러오지 못했습니다: ' + usageResult.reason.message);
+  }
+
+  if (rateLimitsResult.status === 'fulfilled') {
+    renderRateLimits(rateLimitsResult.value);
+  } else {
+    showPanelError('rateLimits', '요청 한도 데이터를 불러오지 못했습니다: ' + rateLimitsResult.reason.message);
+  }
+
+  const failures = [usageResult, rateLimitsResult].filter(r => r.status === 'rejected');
+  if (failures.length === 0) {
     document.getElementById('status').textContent = `${new Date().toLocaleTimeString('ko-KR')} 기준 업데이트됨`;
-  } catch (e) {
-    document.getElementById('status').textContent = '데이터를 불러오지 못했습니다: ' + e.message;
+  } else if (failures.length === 2) {
+    document.getElementById('status').textContent = '데이터를 불러오지 못했습니다.';
+  } else {
+    document.getElementById('status').textContent = `일부 데이터를 불러오지 못했습니다 (${new Date().toLocaleTimeString('ko-KR')} 기준 부분 업데이트).`;
   }
 }
 
@@ -40,10 +80,10 @@ document.getElementById('accountSelect').addEventListener('change', (e) => {
   setUsageTableAccount(e.target.value);
 });
 
-document.getElementById('accountRangeTabs').addEventListener('click', (e) => {
+document.getElementById('globalRangeTabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab-btn');
   if (!btn) return;
-  setAccountRange(btn.dataset.range);
+  setGlobalRange(btn.dataset.range);
 });
 
 loadAll();

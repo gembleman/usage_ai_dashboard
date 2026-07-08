@@ -1,12 +1,30 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI 사용량 대시보드</title>
 <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
 
 <h1>AI 사용량 대시보드</h1>
 <div class="subtitle">Codex 및 Claude Code 로컬 세션 사용량을 계정 / 날짜 / 모델별로 집계합니다.</div>
 
 <div class="toolbar">
   <button id="refreshBtn">데이터 새로고침</button>
-  <span id="status"></span>
+  <span id="status" aria-live="polite"></span>
+</div>
+
+<div class="panel">
+  <h2>기간 필터 (전체 패널에 적용)</h2>
+  <div class="tabs" id="globalRangeTabs" role="tablist" aria-label="기간 필터">
+    <button class="tab-btn" data-range="1d" role="tab" aria-selected="false">최근 1일</button>
+    <button class="tab-btn" data-range="7d" role="tab" aria-selected="false">최근 1주</button>
+    <button class="tab-btn" data-range="30d" role="tab" aria-selected="false">최근 1개월</button>
+    <button class="tab-btn" data-range="365d" role="tab" aria-selected="false">최근 1년</button>
+    <button class="tab-btn active" data-range="all" role="tab" aria-selected="true">전체</button>
+  </div>
 </div>
 
 <div class="panel">
@@ -18,13 +36,6 @@
 <div class="grid-2">
   <div class="panel">
     <h2>계정별 합계</h2>
-    <div class="tabs" id="accountRangeTabs">
-      <button class="tab-btn" data-range="1d">최근 1일</button>
-      <button class="tab-btn" data-range="7d">최근 1주</button>
-      <button class="tab-btn" data-range="30d">최근 1개월</button>
-      <button class="tab-btn" data-range="365d">최근 1년</button>
-      <button class="tab-btn active" data-range="all">전체</button>
-    </div>
     <div class="table-scroll">
       <table id="accountTable">
         <thead>
@@ -52,10 +63,10 @@
 
 <div class="panel">
   <h2>상세 내역 (소스 &times; 계정 &times; 날짜 &times; 모델)</h2>
-  <div class="tabs" id="sourceTabs">
-    <button class="tab-btn active" data-source="all">전체</button>
-    <button class="tab-btn" data-source="codex">Codex</button>
-    <button class="tab-btn" data-source="claude_code">Claude Code</button>
+  <div class="tabs" id="sourceTabs" role="tablist" aria-label="소스 필터">
+    <button class="tab-btn active" data-source="all" role="tab" aria-selected="true">전체</button>
+    <button class="tab-btn" data-source="codex" role="tab" aria-selected="false">Codex</button>
+    <button class="tab-btn" data-source="claude_code" role="tab" aria-selected="false">Claude Code</button>
   </div>
   <div class="filter-row">
     <label for="accountSelect">계정:</label>
@@ -67,7 +78,7 @@
     <table id="usageTable">
       <thead>
         <tr>
-          <th>소스</th><th>계정</th><th>날짜</th>
+          <th>소스</th><th>계정</th><th>날짜</th><th>모델</th>
           <th>입력</th><th>캐시 입력</th><th>출력</th><th>합계</th><th>턴 수</th><th>예상 비용</th>
         </tr>
       </thead>
@@ -79,8 +90,10 @@
 
 <div class="tooltip" id="tooltip"></div>
 
-<script src="/js/util.js"></script>
-<script src="/js/tables.js"></script>
-<script src="/js/charts.js"></script>
-<script src="/js/rate-limits.js"></script>
-<script src="/js/main.js"></script>
+<script src="/js/util.js" defer></script>
+<script src="/js/tables.js" defer></script>
+<script src="/js/charts.js" defer></script>
+<script src="/js/rate-limits.js" defer></script>
+<script src="/js/main.js" defer></script>
+</body>
+</html>

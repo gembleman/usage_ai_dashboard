@@ -1,5 +1,7 @@
 const ACCOUNT_RANGE_DAYS = { '1d': 1, '7d': 7, '30d': 30, '365d': 365, all: null };
-let accountTableState = { usageRows: [], range: 'all' };
+
+// 대시보드 전역 기간 필터 상태. 트렌드 차트/계정별 합계/모델별 분포가 모두 이 값을 참조한다.
+let globalRangeState = { range: 'all', rawRows: [] };
 
 // 기준 날짜(가장 최근 데이터 날짜)로부터 range일 이내의 레코드만 남긴다.
 function filterUsageRowsByRange(usageRows, range) {
@@ -10,6 +12,31 @@ function filterUsageRowsByRange(usageRows, range) {
   cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
   const cutoffStr = cutoff.toISOString().slice(0, 10);
   return usageRows.filter(r => r.date >= cutoffStr);
+}
+
+// 원본 usage 데이터를 저장하고, 현재 선택된 전역 기간으로 필터링해
+// 트렌드 차트 / 계정별 합계 / 모델별 분포를 다시 그린다.
+function renderGlobalFilteredPanels(usageRows) {
+  globalRangeState.rawRows = usageRows || [];
+  applyGlobalRangeFilter();
+}
+
+function setGlobalRange(range) {
+  globalRangeState.range = range;
+  applyGlobalRangeFilter();
+
+  document.querySelectorAll('#globalRangeTabs .tab-btn').forEach(btn => {
+    const active = btn.dataset.range === range;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+}
+
+function applyGlobalRangeFilter() {
+  const filtered = filterUsageRowsByRange(globalRangeState.rawRows, globalRangeState.range);
+  renderAccountTable(filtered);
+  renderTrendChart(filtered);
+  renderModelChart(filtered);
 }
 
 // 상세(usage) 데이터를 (source, account) 기준으로 집계해 계정별 합계 행을 만든다.
@@ -34,22 +61,7 @@ function aggregateAccountRows(usageRows) {
 }
 
 function renderAccountTable(usageRows) {
-  accountTableState.usageRows = usageRows || [];
-  applyAccountRangeFilter();
-}
-
-function setAccountRange(range) {
-  accountTableState.range = range;
-  applyAccountRangeFilter();
-
-  document.querySelectorAll('#accountRangeTabs .tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.range === range);
-  });
-}
-
-function applyAccountRangeFilter() {
-  const filtered = filterUsageRowsByRange(accountTableState.usageRows, accountTableState.range);
-  const rows = aggregateAccountRows(filtered);
+  const rows = aggregateAccountRows(usageRows || []);
 
   const tbody = document.querySelector('#accountTable tbody');
   tbody.innerHTML = '';
@@ -59,7 +71,7 @@ function applyAccountRangeFilter() {
   }
   for (const r of rows) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.source}</td><td>${r.account}</td>` +
+    tr.innerHTML = `<td>${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td><td>${escapeHtml(r.account)}</td>` +
       `<td title="${fmt(r.input_tokens)}">${fmtKo(r.input_tokens)}</td><td title="${fmt(r.cached_input_tokens)}">${fmtKo(r.cached_input_tokens)}</td>` +
       `<td title="${fmt(r.output_tokens)}">${fmtKo(r.output_tokens)}</td><td title="${fmt(r.total_tokens)}">${fmtKo(r.total_tokens)}</td>` +
       `<td>${fmt(r.turns)}</td><td>${fmtUsd(r.hasCost ? r.cost : null)}</td>`;
@@ -70,16 +82,16 @@ function applyAccountRangeFilter() {
 const USAGE_PAGE_SIZE = 50;
 let usageTableState = { raw: [], sorted: [], page: 1, source: 'all', account: 'all' };
 
-// (source, date) 기준으로 완전 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
+// (source, date, model) 기준으로 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
 // 비용은 모델별 단가가 다르므로 모델 단위로 먼저 계산한 뒤 합산한다.
 function aggregateUsageRows(rows) {
   const groups = new Map();
   for (const r of rows) {
-    const key = `${r.source}/${r.date}`;
+    const key = `${r.source}/${r.date}/${r.model}`;
     const cost = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.output_tokens);
     let g = groups.get(key);
     if (!g) {
-      g = { source: r.source, date: r.date, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+      g = { source: r.source, date: r.date, model: r.model, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
       groups.set(key, g);
     }
     g.input_tokens += r.input_tokens;
@@ -92,18 +104,24 @@ function aggregateUsageRows(rows) {
   return [...groups.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 }
 
-function updateAccountOptions(rows) {
+// 선택된 소스(source)에 해당하는 계정만 옵션으로 보여준다. 현재 선택된 계정이
+// 새 목록에 없으면(예: 소스 탭 전환) "전체"로 리셋한다.
+function updateAccountOptions(rows, source) {
   const select = document.getElementById('accountSelect');
-  const accounts = [...new Set(rows.map(r => r.account))].sort();
+  const scoped = filterBySource(rows, source);
+  const accounts = [...new Set(scoped.map(r => r.account))].sort();
   const current = select.value || 'all';
   select.innerHTML = '<option value="all">전체 (합산)</option>' +
-    accounts.map(a => `<option value="${a}">${a}</option>`).join('');
-  select.value = accounts.includes(current) ? current : 'all';
+    accounts.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  const next = accounts.includes(current) ? current : 'all';
+  select.value = next;
+  return next;
 }
 
 function renderUsageTable(rows) {
   usageTableState.raw = rows;
-  updateAccountOptions(rows);
+  const account = updateAccountOptions(rows, usageTableState.source);
+  usageTableState.account = account;
   applyUsageTableFilters();
 }
 
@@ -125,10 +143,15 @@ function applyUsageTableFilters() {
 
 function setUsageTableSource(source) {
   usageTableState.source = source;
+  // 소스가 바뀌면 계정 목록도 해당 소스 기준으로 갱신하고, 기존 선택 계정이
+  // 새 목록에 없으면 "전체"로 되돌린다.
+  usageTableState.account = updateAccountOptions(usageTableState.raw, source);
   applyUsageTableFilters();
 
   document.querySelectorAll('#sourceTabs .tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.source === source);
+    const active = btn.dataset.source === source;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
   });
 }
 
@@ -145,7 +168,7 @@ function renderUsageTablePage() {
   pagination.innerHTML = '';
 
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-note">데이터가 없습니다.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-note">데이터가 없습니다.</td></tr>';
     return;
   }
 
@@ -159,7 +182,7 @@ function renderUsageTablePage() {
 
   for (const r of pageRows) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.source}</td><td>${accountLabel}</td><td>${r.date}</td>` +
+    tr.innerHTML = `<td>${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td><td>${escapeHtml(accountLabel)}</td><td>${escapeHtml(r.date)}</td><td>${escapeHtml(r.model)}</td>` +
       `<td title="${fmt(r.input_tokens)}">${fmtKo(r.input_tokens)}</td><td title="${fmt(r.cached_input_tokens)}">${fmtKo(r.cached_input_tokens)}</td>` +
       `<td title="${fmt(r.output_tokens)}">${fmtKo(r.output_tokens)}</td><td title="${fmt(r.total_tokens)}">${fmtKo(r.total_tokens)}</td>` +
       `<td>${fmt(r.turns)}</td><td>${fmtUsd(r.hasCost ? r.cost : null)}</td>`;

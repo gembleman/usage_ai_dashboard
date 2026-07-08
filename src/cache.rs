@@ -196,11 +196,11 @@ impl Cache {
                     r.account,
                     r.timestamp.to_rfc3339(),
                     r.model,
-                    r.input_tokens,
-                    r.cached_input_tokens,
-                    r.output_tokens,
-                    r.reasoning_output_tokens,
-                    r.total_tokens,
+                    r.input_tokens as i64,
+                    r.cached_input_tokens as i64,
+                    r.output_tokens as i64,
+                    r.reasoning_output_tokens as i64,
+                    r.total_tokens as i64,
                     r.is_subagent as i64,
                 ])?;
             }
@@ -227,16 +227,16 @@ impl Cache {
                     s.plan_type,
                     s.rate_limit_reached_type,
                     s.primary.as_ref().map(|w| w.used_percent),
-                    s.primary.as_ref().map(|w| w.window_minutes),
+                    s.primary.as_ref().map(|w| w.window_minutes as i64),
                     s.primary.as_ref().map(|w| w.resets_at),
                     s.secondary.as_ref().map(|w| w.used_percent),
-                    s.secondary.as_ref().map(|w| w.window_minutes),
+                    s.secondary.as_ref().map(|w| w.window_minutes as i64),
                     s.secondary.as_ref().map(|w| w.resets_at),
                     s.seven_day_opus.as_ref().map(|w| w.used_percent),
-                    s.seven_day_opus.as_ref().map(|w| w.window_minutes),
+                    s.seven_day_opus.as_ref().map(|w| w.window_minutes as i64),
                     s.seven_day_opus.as_ref().map(|w| w.resets_at),
                     s.seven_day_sonnet.as_ref().map(|w| w.used_percent),
-                    s.seven_day_sonnet.as_ref().map(|w| w.window_minutes),
+                    s.seven_day_sonnet.as_ref().map(|w| w.window_minutes as i64),
                     s.seven_day_sonnet.as_ref().map(|w| w.resets_at),
                     // Presence marker: extra_usage is only stored when enabled.
                     s.extra_usage.as_ref().map(|_| 1i64),
@@ -273,11 +273,11 @@ impl Cache {
                     account: row.get(1)?,
                     timestamp: parse_rfc3339(&timestamp),
                     model: row.get(3)?,
-                    input_tokens: row.get(4)?,
-                    cached_input_tokens: row.get(5)?,
-                    output_tokens: row.get(6)?,
-                    reasoning_output_tokens: row.get(7)?,
-                    total_tokens: row.get(8)?,
+                    input_tokens: row.get::<_, i64>(4)? as u64,
+                    cached_input_tokens: row.get::<_, i64>(5)? as u64,
+                    output_tokens: row.get::<_, i64>(6)? as u64,
+                    reasoning_output_tokens: row.get::<_, i64>(7)? as u64,
+                    total_tokens: row.get::<_, i64>(8)? as u64,
                     is_subagent: is_subagent != 0,
                 })
             })?
@@ -295,10 +295,10 @@ impl Cache {
         )?;
         // Rebuild an optional window from its (used_percent, window_minutes,
         // resets_at) column triple; used_percent doubles as presence marker.
-        let window = |used: Option<f64>, minutes: Option<u64>, resets: Option<i64>| {
+        let window = |used: Option<f64>, minutes: Option<i64>, resets: Option<i64>| {
             used.map(|used_percent| RateLimitWindowSnapshot {
                 used_percent,
-                window_minutes: minutes.unwrap_or(0),
+                window_minutes: minutes.unwrap_or(0) as u64,
                 resets_at: resets.unwrap_or(0),
             })
         };

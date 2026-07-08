@@ -1,6 +1,12 @@
 const PALETTE = ['#7c9eff', '#4fd1a5', '#f5c26b', '#f47174', '#b98cf0', '#5bc8e0', '#e08fd0', '#9fd15a'];
 const fmt = n => n.toLocaleString('en-US');
 
+// innerHTML에 삽입하기 전에 사용자/로그 기반 문자열(계정명, 모델명 등)을 이스케이프한다.
+const ESCAPE_HTML_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, ch => ESCAPE_HTML_MAP[ch]);
+}
+
 // 큰 숫자를 억/만/천 단위의 한국어 표기로 변환 (예: 12345678 -> "1,234만 5,678")
 function fmtKo(n) {
   n = Math.round(n);
@@ -57,8 +63,35 @@ const tooltip = document.getElementById('tooltip');
 function showTooltip(evt, html) {
   tooltip.innerHTML = html;
   tooltip.style.display = 'block';
-  tooltip.style.left = (evt.clientX + 14) + 'px';
-  tooltip.style.top = (evt.clientY + 14) + 'px';
+
+  // FocusEvent(키보드 포커스)나 touches가 비어 있는 TouchEvent에는 clientX/Y가
+  // 없으므로, 이벤트 대상 요소의 중심 좌표를 앵커로 폴백한다.
+  let anchorX = evt.clientX;
+  let anchorY = evt.clientY;
+  if (!Number.isFinite(anchorX) || !Number.isFinite(anchorY)) {
+    const t = evt.target && evt.target.getBoundingClientRect ? evt.target.getBoundingClientRect() : null;
+    anchorX = t ? t.left + t.width / 2 : 0;
+    anchorY = t ? t.top + t.height / 2 : 0;
+  }
+
+  const margin = 8;
+  const rect = tooltip.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  let left = anchorX + 14;
+  let top = anchorY + 14;
+
+  // 오른쪽/아래쪽 경계를 넘으면 커서 반대편으로 뒤집는다.
+  if (left + rect.width + margin > vw) left = anchorX - 14 - rect.width;
+  if (top + rect.height + margin > vh) top = anchorY - 14 - rect.height;
+
+  // 그래도 화면 밖이면(작은 뷰포트) 경계 안쪽으로 클램프한다.
+  left = Math.max(margin, Math.min(left, vw - rect.width - margin));
+  top = Math.max(margin, Math.min(top, vh - rect.height - margin));
+
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
 }
 function hideTooltip() { tooltip.style.display = 'none'; }
 
@@ -73,6 +106,14 @@ function colorFor(key, keys) {
 
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = await res.text();
+    } catch (e) {
+      // 본문을 읽지 못하면 상태 코드만 사용
+    }
+    throw new Error(detail ? `${url} -> ${res.status}: ${detail}` : `${url} -> ${res.status}`);
+  }
   return res.json();
 }
