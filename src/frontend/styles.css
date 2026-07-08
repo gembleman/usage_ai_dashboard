@@ -405,6 +405,8 @@
 
   .tooltip {
     position: fixed;
+    inset: unset;
+    margin: 0;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 6px;
@@ -412,9 +414,18 @@
     font-size: 12px;
     font-family: var(--mono);
     pointer-events: none;
-    display: none;
     z-index: 10;
     box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+
+    &:popover-open {
+      display: block;
+    }
+  }
+
+  @supports not selector(:popover-open) {
+    .tooltip {
+      display: none;
+    }
   }
 }
 

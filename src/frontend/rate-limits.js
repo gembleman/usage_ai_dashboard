@@ -1,23 +1,9 @@
-import { SOURCE_LABELS, emptyNote } from './util.js';
+import { SOURCE_LABELS, emptyNote, fmtDateTime, fmtDurationKo } from './util.js';
 
 function meterColor(pct) {
   if (pct >= 90) return 'var(--bad)';
   if (pct >= 70) return 'var(--warn)';
   return 'var(--good)';
-}
-
-// 남은 초를 "N일 N시간" / "N시간 N분" / "N분 N초" / "N초" 형태의 한국어로 변환.
-// 이미 지난 시각이면 null을 반환한다.
-function formatRemaining(sec) {
-  if (sec <= 0) return null;
-  const d = Math.floor(sec / 86400);
-  const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  if (d > 0) return `${d}일 ${h}시간`;
-  if (h > 0) return `${h}시간 ${m}분`;
-  if (m > 0) return `${m}분 ${s}초`;
-  return `${s}초`;
 }
 
 // data-resets-at(epoch 초)을 가진 모든 카운트다운 요소를 현재 시각 기준으로 갱신.
@@ -26,7 +12,7 @@ function updateResetCountdowns() {
   if (document.hidden) return; // 백그라운드 탭에서는 갱신 생략 (복귀 시 visibilitychange로 즉시 갱신)
   const now = Date.now() / 1000;
   for (const el of document.querySelectorAll('.rl-countdown')) {
-    const remaining = formatRemaining(Number(el.dataset.resetsAt) - now);
+    const remaining = fmtDurationKo(Number(el.dataset.resetsAt) - now);
     if (remaining === null) {
       // 초기화 시각이 지났지만 아직 새 스냅샷을 받지 못한 상태.
       el.textContent = '초기화됨 — 새로고침으로 갱신';
@@ -93,7 +79,7 @@ function rateWindow(label, w) {
     const resetRow = div('rl-window-label');
     const countdown = span('rl-countdown');
     countdown.dataset.resetsAt = String(w.resets_at);
-    resetRow.append(countdown, span('', `${new Date(w.resets_at * 1000).toLocaleString('ko-KR')} 초기화`));
+    resetRow.append(countdown, span('', `${fmtDateTime(w.resets_at * 1000)} 초기화`));
     wrap.appendChild(resetRow);
   }
   return wrap;
@@ -116,7 +102,7 @@ function extraUsageWindow(extra) {
 
 function rateLimitCard(snap) {
   const card = div('rl-card');
-  const observed = new Date(snap.observed_at).toLocaleString('ko-KR');
+  const observed = fmtDateTime(snap.observed_at);
   const sourceLabel = SOURCE_LABELS[snap.source] || snap.source || '';
   // Claude Code windows come from the OAuth usage API and use different
   // labels than Codex's 5h/7d rate-limit windows.

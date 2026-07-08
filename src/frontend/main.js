@@ -1,4 +1,4 @@
-import { emptyNote, emptyTableRow, fetchJson } from './util.js';
+import { emptyNote, emptyTableRow, fetchJson, fmtTime } from './util.js';
 import { renderRateLimits } from './rate-limits.js';
 import {
   renderGlobalFilteredPanels,
@@ -54,11 +54,11 @@ async function loadAll() {
 
   const failures = [usageResult, rateLimitsResult].filter(r => r.status === 'rejected');
   if (failures.length === 0) {
-    document.getElementById('status').textContent = `${new Date().toLocaleTimeString('ko-KR')} 기준 업데이트됨`;
+    document.getElementById('status').textContent = `${fmtTime(Date.now())} 기준 업데이트됨`;
   } else if (failures.length === 2) {
     document.getElementById('status').textContent = '데이터를 불러오지 못했습니다.';
   } else {
-    document.getElementById('status').textContent = `일부 데이터를 불러오지 못했습니다 (${new Date().toLocaleTimeString('ko-KR')} 기준 부분 업데이트).`;
+    document.getElementById('status').textContent = `일부 데이터를 불러오지 못했습니다 (${fmtTime(Date.now())} 기준 부분 업데이트).`;
   }
 }
 

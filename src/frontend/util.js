@@ -1,5 +1,18 @@
 export const PALETTE = ['#7c9eff', '#4fd1a5', '#f5c26b', '#f47174', '#b98cf0', '#5bc8e0', '#e08fd0', '#9fd15a'];
-export const fmt = n => n.toLocaleString('en-US');
+const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
+const USD_FORMAT = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const KO_TIME_FORMAT = new Intl.DateTimeFormat('ko-KR', { timeStyle: 'medium' });
+const KO_DATE_TIME_FORMAT = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'medium' });
+const KO_DURATION_FORMAT = new Intl.DurationFormat('ko-KR', { style: 'long' });
+
+export const fmt = n => NUMBER_FORMAT.format(n);
+export const fmtTime = value => KO_TIME_FORMAT.format(value instanceof Date ? value : new Date(value));
+export const fmtDateTime = value => KO_DATE_TIME_FORMAT.format(value instanceof Date ? value : new Date(value));
 
 // Human-readable source labels. Codex and Claude Code accounts can share a
 // display name (e.g. "user01"), so the source badge disambiguates them.
@@ -24,10 +37,22 @@ export function fmtKo(n) {
   const man = Math.floor((n % 100000000) / 10000);
   const rest = n % 10000;
   const parts = [];
-  if (eok > 0) parts.push(`${eok.toLocaleString('en-US')}억`);
-  if (man > 0) parts.push(`${eok > 0 ? String(man).padStart(4, '0') : man.toLocaleString('en-US')}만`);
-  if (rest > 0 || parts.length === 0) parts.push(`${man > 0 ? String(rest).padStart(4, '0') : rest.toLocaleString('en-US')}`);
+  if (eok > 0) parts.push(`${fmt(eok)}억`);
+  if (man > 0) parts.push(`${eok > 0 ? String(man).padStart(4, '0') : fmt(man)}만`);
+  if (rest > 0 || parts.length === 0) parts.push(`${man > 0 ? String(rest).padStart(4, '0') : fmt(rest)}`);
   return (neg ? '-' : '') + parts.join(' ');
+}
+
+export function fmtDurationKo(sec) {
+  if (sec <= 0) return null;
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (d > 0) return KO_DURATION_FORMAT.format({ days: d, hours: h });
+  if (h > 0) return KO_DURATION_FORMAT.format({ hours: h, minutes: m });
+  if (m > 0) return KO_DURATION_FORMAT.format({ minutes: m, seconds: s });
+  return KO_DURATION_FORMAT.format({ seconds: s });
 }
 
 // 모델별 100만 토큰당 가격 (USD). 알려지지 않은 모델은 undefined 반환.
@@ -66,12 +91,20 @@ export function estimateCostUsd(model, inputTokens, cachedInputTokens, cacheCrea
   return inCost + cachedReadCost + cachedCreationCost + outCost;
 }
 
-export const fmtUsd = v => v == null ? '—' : `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const fmtUsd = v => v == null ? '—' : USD_FORMAT.format(v);
 const tooltip = document.getElementById('tooltip');
 
 export function showTooltip(evt, html) {
-  tooltip.innerHTML = html;
-  tooltip.style.display = 'block';
+  if (typeof tooltip.setHTML === 'function') {
+    tooltip.setHTML(html);
+  } else {
+    tooltip.innerHTML = html;
+  }
+  if (typeof tooltip.showPopover === 'function') {
+    if (!tooltip.matches(':popover-open')) tooltip.showPopover();
+  } else {
+    tooltip.style.display = 'block';
+  }
 
   // FocusEvent(키보드 포커스)에는 clientX/Y가 없으므로 이벤트 대상 요소의
   // 중심 좌표를 앵커로 폴백한다.
@@ -102,7 +135,21 @@ export function showTooltip(evt, html) {
   tooltip.style.left = left + 'px';
   tooltip.style.top = top + 'px';
 }
-export function hideTooltip() { tooltip.style.display = 'none'; }
+export function hideTooltip() {
+  if (typeof tooltip.hidePopover === 'function') {
+    if (tooltip.matches(':popover-open')) tooltip.hidePopover();
+  } else {
+    tooltip.style.display = 'none';
+  }
+}
+
+export function updateWithViewTransition(update) {
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    update();
+  } else {
+    document.startViewTransition(update);
+  }
+}
 
 export function seriesKey(row) {
   return `${row.source}/${row.account}`;
@@ -140,9 +187,13 @@ export function swatch(color) {
 export async function fetchJson(url, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 30000;
   const { timeoutMs: _, ...fetchOpts } = opts;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = fetchOpts.signal
+    ? AbortSignal.any([fetchOpts.signal, timeoutSignal])
+    : timeoutSignal;
   const res = await fetch(url, {
     ...fetchOpts,
-    signal: fetchOpts.signal ?? AbortSignal.timeout(timeoutMs),
+    signal,
   });
   if (!res.ok) {
     let detail = '';

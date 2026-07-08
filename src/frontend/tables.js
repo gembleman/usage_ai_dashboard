@@ -5,6 +5,7 @@ import {
   fmt,
   fmtKo,
   fmtUsd,
+  updateWithViewTransition,
 } from './util.js';
 import { renderModelChart, renderTrendChart } from './charts.js';
 
@@ -18,9 +19,7 @@ function filterUsageRowsByRange(usageRows, range) {
   const days = ACCOUNT_RANGE_DAYS[range];
   if (!days || usageRows.length === 0) return usageRows;
   const latest = usageRows.reduce((max, r) => (r.date > max ? r.date : max), usageRows[0].date);
-  const cutoff = new Date(latest + 'T00:00:00Z');
-  cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const cutoffStr = Temporal.PlainDate.from(latest).subtract({ days: days - 1 }).toString();
   return usageRows.filter(r => r.date >= cutoffStr);
 }
 
@@ -33,7 +32,7 @@ export function renderGlobalFilteredPanels(usageRows) {
 
 export function setGlobalRange(range) {
   globalRangeState.range = range;
-  applyGlobalRangeFilter();
+  updateWithViewTransition(applyGlobalRangeFilter);
 
   document.querySelectorAll('#globalRangeTabs .tab-btn').forEach(btn => {
     const active = btn.dataset.range === range;
@@ -59,14 +58,29 @@ function applyGlobalRangeFilter() {
 
 // 상세(usage) 데이터를 (source, account) 기준으로 집계해 계정별 합계 행을 만든다.
 function aggregateAccountRows(usageRows) {
-  const groups = new Map();
-  for (const r of usageRows) {
-    const key = `${r.source}/${r.account}`;
-    let g = groups.get(key);
-    if (!g) {
-      g = { source: r.source, account: r.account, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
-      groups.set(key, g);
-    }
+  return [...Map.groupBy(usageRows, r => `${r.source}/${r.account}`).values()]
+    .map(group => {
+      const first = group[0];
+      const g = { source: first.source, account: first.account, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+      for (const r of group) {
+        g.input_tokens += r.input_tokens;
+        g.cached_input_tokens += r.cached_input_tokens;
+        g.cache_creation_input_tokens += (r.cache_creation_input_tokens || 0);
+        g.output_tokens += r.output_tokens;
+        g.total_tokens += r.total_tokens;
+        g.turns += r.turns;
+        const c = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
+        if (c != null) { g.cost += c; g.hasCost = true; }
+      }
+      return g;
+    })
+    .sort((a, b) => a.source.localeCompare(b.source) || a.account.localeCompare(b.account));
+}
+
+function sumUsageGroup(group) {
+  const first = group[0];
+  const g = { source: first.source, account: first.account, date: first.date, model: first.model, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+  for (const r of group) {
     g.input_tokens += r.input_tokens;
     g.cached_input_tokens += r.cached_input_tokens;
     g.cache_creation_input_tokens += (r.cache_creation_input_tokens || 0);
@@ -76,7 +90,7 @@ function aggregateAccountRows(usageRows) {
     const c = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
     if (c != null) { g.cost += c; g.hasCost = true; }
   }
-  return [...groups.values()].sort((a, b) => a.source.localeCompare(b.source) || a.account.localeCompare(b.account));
+  return g;
 }
 
 function appendTextCell(tr, text, title) {
@@ -119,25 +133,10 @@ let usageTableState = { raw: [], sorted: [], page: 1, source: 'all', account: 'a
 // (source, account, date, model) 기준으로 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
 // 비용은 모델별 단가가 다르므로 모델 단위로 먼저 계산한 뒤 합산한다.
 function aggregateUsageRows(rows) {
-  const groups = new Map();
-  for (const r of rows) {
-    const key = `${r.source}/${r.account}/${r.date}/${r.model}`;
-    const cost = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
-    let g = groups.get(key);
-    if (!g) {
-      g = { source: r.source, account: r.account, date: r.date, model: r.model, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
-      groups.set(key, g);
-    }
-    g.input_tokens += r.input_tokens;
-    g.cached_input_tokens += r.cached_input_tokens;
-    g.cache_creation_input_tokens += (r.cache_creation_input_tokens || 0);
-    g.output_tokens += r.output_tokens;
-    g.total_tokens += r.total_tokens;
-    g.turns += r.turns;
-    if (cost != null) { g.cost += cost; g.hasCost = true; }
-  }
   // 날짜 내림차순을 우선하되, 같은 날짜 내에서는 source/account/model 순으로 안정 정렬한다.
-  return [...groups.values()].sort((a, b) =>
+  return [...Map.groupBy(rows, r => `${r.source}/${r.account}/${r.date}/${r.model}`).values()]
+    .map(sumUsageGroup)
+    .sort((a, b) =>
     (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) ||
     a.source.localeCompare(b.source) ||
     a.account.localeCompare(b.account) ||
@@ -188,8 +187,10 @@ export function setUsageTableSource(source) {
   usageTableState.source = source;
   // 소스가 바뀌면 계정 목록도 해당 소스 기준으로 갱신하고, 기존 선택 계정이
   // 새 목록에 없으면 "전체"로 되돌린다.
-  usageTableState.account = updateAccountOptions(usageTableState.raw, source);
-  applyUsageTableFilters();
+  updateWithViewTransition(() => {
+    usageTableState.account = updateAccountOptions(usageTableState.raw, source);
+    applyUsageTableFilters();
+  });
 
   document.querySelectorAll('#sourceTabs .tab-btn').forEach(btn => {
     const active = btn.dataset.source === source;
@@ -200,7 +201,7 @@ export function setUsageTableSource(source) {
 
 export function setUsageTableAccount(account) {
   usageTableState.account = account;
-  applyUsageTableFilters();
+  updateWithViewTransition(applyUsageTableFilters);
 }
 
 function appendUsageRow(parent, r) {

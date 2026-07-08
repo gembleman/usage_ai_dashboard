@@ -15,6 +15,7 @@ import {
 // 현재 렌더링된 트렌드 차트의 데이터. 포인트 툴팁이 이벤트 위임 핸들러에서
 // 참조한다 (포인트가 수천 개일 수 있어 각 원에 리스너를 붙이지 않는다).
 let trendChartState = null;
+let modelChartState = null;
 
 function trendPointFromEvent(evt) {
   if (!trendChartState || !evt.target || !evt.target.closest) return null;
@@ -46,6 +47,35 @@ function showTrendPointTooltip(evt, c) {
   container.addEventListener('focusout', offPoint);
 }
 
+function modelSliceFromEvent(evt) {
+  if (!modelChartState || !evt.target || !evt.target.closest) return null;
+  return evt.target.closest('path.slice');
+}
+
+function showModelSliceTooltip(evt, s) {
+  const { entries, total, costByModel } = modelChartState;
+  const i = Number(s.getAttribute('data-entry-idx'));
+  const [model, val] = entries[i];
+  const pct = ((val / total) * 100).toFixed(1);
+  showTooltip(evt, `<b>${escapeHtml(model)}</b><br>${fmtKo(val)} 토큰 (${pct}%)<br>예상 비용: ${fmtUsd(costByModel.get(model))}`);
+}
+
+{
+  const container = document.getElementById('modelChart');
+  const onSlice = evt => {
+    const s = modelSliceFromEvent(evt);
+    if (s) showModelSliceTooltip(evt, s);
+  };
+  const offSlice = evt => {
+    if (modelSliceFromEvent(evt)) hideTooltip();
+  };
+  container.addEventListener('pointerover', onSlice);
+  container.addEventListener('pointermove', onSlice);
+  container.addEventListener('pointerout', offSlice);
+  container.addEventListener('focusin', onSlice);
+  container.addEventListener('focusout', offSlice);
+}
+
 export function renderTrendChart(rows) {
   const container = document.getElementById('trendChart');
   const legend = document.getElementById('trendLegend');
@@ -58,13 +88,15 @@ export function renderTrendChart(rows) {
   }
 
   // date -> series -> total_tokens (기록이 없는 조합은 undefined로 남겨 "데이터 없음"과 "0"을 구분한다)
-  const dates = [...new Set(rows.map(r => r.date))].sort();
+  const rowsByDate = Map.groupBy(rows, r => r.date);
+  const dates = [...rowsByDate.keys()].sort();
   const keys = [...new Set(rows.map(seriesKey))].sort();
   const byDateSeries = {};
-  for (const d of dates) byDateSeries[d] = {};
-  for (const r of rows) {
-    const k = seriesKey(r);
-    byDateSeries[r.date][k] = (byDateSeries[r.date][k] || 0) + r.total_tokens;
+  for (const d of dates) {
+    byDateSeries[d] = {};
+    for (const [k, group] of Map.groupBy(rowsByDate.get(d), seriesKey)) {
+      byDateSeries[d][k] = group.reduce((sum, r) => sum + r.total_tokens, 0);
+    }
   }
   trendChartState = { dates, keys, byDateSeries };
 
@@ -156,25 +188,26 @@ export function renderModelChart(rows) {
   container.replaceChildren();
   legend.replaceChildren();
   if (rows.length === 0) {
+    modelChartState = null;
     container.replaceChildren(emptyNote('데이터가 없습니다.'));
     return;
   }
 
-  const byModel = {};
-  const byModelUsage = {};
-  for (const r of rows) {
-    byModel[r.model] = (byModel[r.model] || 0) + r.total_tokens;
-    const u = byModelUsage[r.model] || { input: 0, cached: 0, creation: 0, output: 0 };
-    u.input += r.input_tokens;
-    u.cached += r.cached_input_tokens;
-    u.creation += (r.cache_creation_input_tokens || 0);
-    u.output += r.output_tokens;
-    byModelUsage[r.model] = u;
+  const byModelUsage = new Map();
+  for (const [model, group] of Map.groupBy(rows, r => r.model)) {
+    const u = { input: 0, cached: 0, creation: 0, output: 0, total: 0 };
+    for (const r of group) {
+      u.total += r.total_tokens;
+      u.input += r.input_tokens;
+      u.cached += r.cached_input_tokens;
+      u.creation += (r.cache_creation_input_tokens || 0);
+      u.output += r.output_tokens;
+    }
+    byModelUsage.set(model, u);
   }
-  const rawEntries = Object.entries(byModel).sort((a, b) => b[1] - a[1]);
+  const rawEntries = [...byModelUsage].map(([model, u]) => [model, u.total]).sort((a, b) => b[1] - a[1]);
   const total = rawEntries.reduce((s, [, v]) => s + v, 0) || 1;
-  const totalCost = rawEntries.reduce((s, [m]) => {
-    const u = byModelUsage[m];
+  const totalCost = [...byModelUsage.entries()].reduce((s, [m, u]) => {
     const c = estimateCostUsd(m, u.input, u.cached, u.creation, u.output);
     return s + (c || 0);
   }, 0);
@@ -189,7 +222,7 @@ export function renderModelChart(rows) {
   for (const [model, val] of rawEntries) {
     if (val / total < 0.01) {
       otherVal += val;
-      const u = byModelUsage[model];
+      const u = byModelUsage.get(model);
       otherUsage.input += u.input;
       otherUsage.cached += u.cached;
       otherUsage.creation += u.creation;
@@ -201,7 +234,7 @@ export function renderModelChart(rows) {
     }
   }
   const entries = otherVal > 0 ? [...main, [OTHER_LABEL, otherVal]] : main;
-  if (otherVal > 0) byModelUsage[OTHER_LABEL] = otherUsage;
+  if (otherVal > 0) byModelUsage.set(OTHER_LABEL, otherUsage);
 
   const size = 180, cx = size / 2, cy = size / 2, r = 78;
   let angle = -Math.PI / 2;
@@ -228,27 +261,12 @@ export function renderModelChart(rows) {
 
   // "기타"는 findPricing 매칭이 안 되므로 위에서 미리 합산한 비용(otherUsage)을 쓰고,
   // 실모델은 그대로 실시간 계산한다. 비용이 하나도 없으면 null → fmtUsd가 '—'로 표시한다.
-  const costForEntry = model => {
-    if (model === OTHER_LABEL) return otherUsage.hasCost ? otherUsage.cost : null;
-    const u = byModelUsage[model];
-    return estimateCostUsd(model, u.input, u.cached, u.creation, u.output);
-  };
-
-  const showSliceTooltip = (evt, s) => {
-    const i = Number(s.getAttribute('data-entry-idx'));
-    const [model, val] = entries[i];
-    const pct = ((val / total) * 100).toFixed(1);
-    const cost = costForEntry(model);
-    showTooltip(evt, `<b>${escapeHtml(model)}</b><br>${fmtKo(val)} 토큰 (${pct}%)<br>예상 비용: ${fmtUsd(cost)}`);
-  };
-
-  container.querySelectorAll('.slice').forEach(s => {
-    s.addEventListener('pointerenter', evt => showSliceTooltip(evt, s));
-    s.addEventListener('pointermove', evt => showSliceTooltip(evt, s));
-    s.addEventListener('pointerleave', hideTooltip);
-    s.addEventListener('focus', evt => showSliceTooltip(evt, s));
-    s.addEventListener('blur', hideTooltip);
-  });
+  const costByModel = new Map(entries.map(([model]) => {
+    if (model === OTHER_LABEL) return [model, otherUsage.hasCost ? otherUsage.cost : null];
+    const u = byModelUsage.get(model);
+    return [model, estimateCostUsd(model, u.input, u.cached, u.creation, u.output)];
+  }));
+  modelChartState = { entries, total, costByModel };
 
   const totalItem = document.createElement('div');
   totalItem.className = 'legend-item legend-total';
@@ -261,7 +279,7 @@ export function renderModelChart(rows) {
   entries.forEach(([model, val], i) => {
     const color = PALETTE[i % PALETTE.length];
     const pct = ((val / total) * 100).toFixed(1);
-    const cost = costForEntry(model);
+    const cost = costByModel.get(model);
     const item = document.createElement('div');
     item.className = 'legend-item';
     item.append(swatch(color), document.createTextNode(`${model} (${pct}%) — ${fmtUsd(cost)}`));
