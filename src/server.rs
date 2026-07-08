@@ -17,8 +17,22 @@ use crate::config::Config;
 use crate::model::{RateLimitSnapshot, Source, UsageRecord};
 use crate::{aggregate, aggregate_per_account, parse_all, AggTotals};
 
-const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const DASHBOARD_HTML: &str = include_str!("frontend/dashboard.html");
+const DASHBOARD_CSS: &str = include_str!("frontend/styles.css");
+const JS_UTIL: &str = include_str!("frontend/util.js");
+const JS_TABLES: &str = include_str!("frontend/tables.js");
+const JS_CHARTS: &str = include_str!("frontend/charts.js");
+const JS_RATE_LIMITS: &str = include_str!("frontend/rate-limits.js");
+const JS_MAIN: &str = include_str!("frontend/main.js");
 const DEFAULT_PORT: u16 = 3000;
+
+const CSS_CONTENT_TYPE: &str = "text/css; charset=utf-8";
+const JS_CONTENT_TYPE: &str = "text/javascript; charset=utf-8";
+
+/// Serve a static asset with an explicit Content-Type header.
+fn static_asset(content_type: &'static str, body: &'static str) -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, content_type)], body)
+}
 
 struct AppData {
     records: Vec<UsageRecord>,
@@ -158,6 +172,30 @@ async fn get_index() -> impl IntoResponse {
     Html(DASHBOARD_HTML)
 }
 
+async fn get_styles() -> impl IntoResponse {
+    static_asset(CSS_CONTENT_TYPE, DASHBOARD_CSS)
+}
+
+async fn get_js_util() -> impl IntoResponse {
+    static_asset(JS_CONTENT_TYPE, JS_UTIL)
+}
+
+async fn get_js_tables() -> impl IntoResponse {
+    static_asset(JS_CONTENT_TYPE, JS_TABLES)
+}
+
+async fn get_js_charts() -> impl IntoResponse {
+    static_asset(JS_CONTENT_TYPE, JS_CHARTS)
+}
+
+async fn get_js_rate_limits() -> impl IntoResponse {
+    static_asset(JS_CONTENT_TYPE, JS_RATE_LIMITS)
+}
+
+async fn get_js_main() -> impl IntoResponse {
+    static_asset(JS_CONTENT_TYPE, JS_MAIN)
+}
+
 /// Build the axum router and block on serving it via a multi-thread tokio
 /// runtime (so blocking parse work can run on the blocking pool).
 pub fn run(config: Config, include_dormant_claude: bool) {
@@ -175,6 +213,12 @@ pub fn run(config: Config, include_dormant_claude: bool) {
 
     let app = Router::new()
         .route("/", get(get_index))
+        .route("/styles.css", get(get_styles))
+        .route("/js/util.js", get(get_js_util))
+        .route("/js/tables.js", get(get_js_tables))
+        .route("/js/charts.js", get(get_js_charts))
+        .route("/js/rate-limits.js", get(get_js_rate_limits))
+        .route("/js/main.js", get(get_js_main))
         .route("/api/usage", get(get_usage))
         .route("/api/accounts", get(get_accounts))
         .route("/api/rate_limits", get(get_rate_limits))

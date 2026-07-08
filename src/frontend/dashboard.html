@@ -1,0 +1,67 @@
+<title>Usage AI Dashboard</title>
+<link rel="stylesheet" href="/styles.css">
+
+<h1>Usage AI Dashboard</h1>
+<div class="subtitle">Codex &amp; Claude Code local session usage, aggregated by account / date / model.</div>
+
+<div class="toolbar">
+  <button id="refreshBtn">Refresh data</button>
+  <span id="status"></span>
+</div>
+
+<div class="panel">
+  <h2>Daily token usage (source &times; account)</h2>
+  <div id="trendChart"></div>
+  <div id="trendLegend" class="legend"></div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Account totals</h2>
+    <div class="table-scroll">
+      <table id="accountTable">
+        <thead>
+          <tr>
+            <th>Source</th><th>Account</th><th>Input</th><th>Cached in</th>
+            <th>Output</th><th>Total</th><th>Turns</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Model distribution (by total tokens)</h2>
+    <div id="modelChart"></div>
+    <div id="modelLegend" class="legend"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Codex rate limits</h2>
+  <div id="rateLimits"></div>
+</div>
+
+<div class="panel">
+  <h2>Full breakdown (source &times; account &times; date &times; model)</h2>
+  <div class="table-scroll">
+    <table id="usageTable">
+      <thead>
+        <tr>
+          <th>Source</th><th>Account</th><th>Date</th><th>Model</th>
+          <th>Input</th><th>Cached in</th><th>Output</th><th>Total</th><th>Turns</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script src="/js/util.js"></script>
+<script src="/js/tables.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/rate-limits.js"></script>
+<script src="/js/main.js"></script>
