@@ -20,6 +20,18 @@ impl std::fmt::Display for Source {
     }
 }
 
+impl std::str::FromStr for Source {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "codex" => Ok(Source::Codex),
+            "claude_code" => Ok(Source::ClaudeCode),
+            other => Err(format!("unknown source: {other}")),
+        }
+    }
+}
+
 /// A single normalized usage record: one turn (Codex) or one assistant
 /// message (Claude Code), already de-duplicated / delta-resolved by the
 /// source-specific parser.

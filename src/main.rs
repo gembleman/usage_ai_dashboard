@@ -1,3 +1,4 @@
+mod cache;
 mod claude_code;
 mod codex;
 mod config;

@@ -42,12 +42,20 @@ pub struct Config {
     port: Option<u16>,
     codex: Vec<(CodexAccount, bool)>,
     claude: Vec<(ClaudeAccount, bool)>,
+    /// Directory the loaded `config.toml` lives in, if any. Used to place
+    /// the cache DB alongside it.
+    config_dir: Option<PathBuf>,
 }
 
 impl Config {
     /// Server port from `config.toml`, if set.
     pub fn port(&self) -> Option<u16> {
         self.port
+    }
+
+    /// Directory the loaded `config.toml` lives in, if any.
+    pub fn config_dir(&self) -> Option<&Path> {
+        self.config_dir.as_deref()
     }
 
     /// Codex accounts, filtered by dormant flag.
@@ -123,6 +131,7 @@ impl Config {
             port: raw.port,
             codex,
             claude,
+            config_dir: path.parent().map(|p| p.to_path_buf()),
         })
     }
 

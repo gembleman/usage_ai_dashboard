@@ -45,6 +45,11 @@
 
 <div class="panel">
   <h2>상세 내역 (소스 &times; 계정 &times; 날짜 &times; 모델)</h2>
+  <div class="tabs" id="sourceTabs">
+    <button class="tab-btn active" data-source="all">전체</button>
+    <button class="tab-btn" data-source="codex">Codex</button>
+    <button class="tab-btn" data-source="claude_code">Claude Code</button>
+  </div>
   <div class="table-scroll">
     <table id="usageTable">
       <thead>

@@ -24,12 +24,28 @@ function renderAccountTable(rows, usageRows) {
 }
 
 const USAGE_PAGE_SIZE = 50;
-let usageTableState = { sorted: [], page: 1 };
+let usageTableState = { all: [], sorted: [], page: 1, source: 'all' };
 
 function renderUsageTable(rows) {
-  const sorted = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-  usageTableState = { sorted, page: 1 };
+  const all = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const source = usageTableState.source || 'all';
+  usageTableState = { all, sorted: filterBySource(all, source), page: 1, source };
   renderUsageTablePage();
+}
+
+function filterBySource(rows, source) {
+  return source === 'all' ? rows : rows.filter(r => r.source === source);
+}
+
+function setUsageTableSource(source) {
+  usageTableState.source = source;
+  usageTableState.sorted = filterBySource(usageTableState.all, source);
+  usageTableState.page = 1;
+  renderUsageTablePage();
+
+  document.querySelectorAll('#sourceTabs .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.source === source);
+  });
 }
 
 function renderUsageTablePage() {

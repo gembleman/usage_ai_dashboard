@@ -31,4 +31,10 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('sourceTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  setUsageTableSource(btn.dataset.source);
+});
+
 loadAll();

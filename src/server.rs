@@ -13,6 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
+use crate::cache::Cache;
 use crate::config::Config;
 use crate::model::{RateLimitSnapshot, Source, UsageRecord};
 use crate::{aggregate, aggregate_per_account, parse_all, AggTotals};
@@ -139,7 +140,8 @@ struct RefreshResponse {
     rate_limit_count: usize,
 }
 
-/// POST /api/refresh - re-run the parsers and replace the in-memory state.
+/// POST /api/refresh - re-run the parsers, replace the in-memory state, and
+/// overwrite the on-disk cache.
 async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
     let (config, include_dormant_claude) = {
         let data = state.read().unwrap();
@@ -147,10 +149,18 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
     };
 
     // parse_all is synchronous and I/O-heavy; run it off the async runtime.
-    let (records, rate_limits, _summary) =
-        tokio::task::spawn_blocking(move || parse_all(&config, include_dormant_claude))
-            .await
-            .expect("parse task panicked");
+    let config_dir = config.config_dir().map(|p| p.to_path_buf());
+    let (records, rate_limits, _summary) = tokio::task::spawn_blocking(move || {
+        let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
+        if let Ok(mut cache) = Cache::open(config_dir.as_deref()) {
+            if let Err(e) = cache.save(&records, &rate_limits) {
+                eprintln!("Warning: failed to write cache: {e}");
+            }
+        }
+        (records, rate_limits, summary)
+    })
+    .await
+    .expect("parse task panicked");
     let record_count = records.len();
     let rate_limit_count = rate_limits.len();
 
@@ -175,9 +185,31 @@ async fn get_index() -> impl IntoResponse {
 /// Build the axum router and block on serving it via a multi-thread tokio
 /// runtime (so blocking parse work can run on the blocking pool).
 pub fn run(config: Config, include_dormant_claude: bool) {
-    println!("Parsing accounts before starting server...");
-    let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
-    crate::print_parse_summary(&summary);
+    let config_dir = config.config_dir().map(|p| p.to_path_buf());
+    let cached = Cache::open(config_dir.as_deref())
+        .ok()
+        .and_then(|c| c.load().ok().flatten());
+
+    let (records, rate_limits) = match cached {
+        Some((records, rate_limits)) => {
+            println!(
+                "Loaded {} cached records from cache.sqlite3 (click 데이터 새로고침 to re-parse).",
+                records.len()
+            );
+            (records, rate_limits)
+        }
+        None => {
+            println!("No cache found; parsing accounts before starting server...");
+            let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
+            crate::print_parse_summary(&summary);
+            if let Ok(mut cache) = Cache::open(config_dir.as_deref()) {
+                if let Err(e) = cache.save(&records, &rate_limits) {
+                    eprintln!("Warning: failed to write cache: {e}");
+                }
+            }
+            (records, rate_limits)
+        }
+    };
 
     let config_port = config.port();
     let state: SharedState = Arc::new(RwLock::new(AppData {
