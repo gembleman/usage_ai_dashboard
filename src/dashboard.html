@@ -1,0 +1,435 @@
+<title>Usage AI Dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel-border: #262b38;
+    --text: #e6e8ef;
+    --text-dim: #9aa0b4;
+    --accent: #7c9eff;
+    --good: #4fd1a5;
+    --warn: #f5c26b;
+    --bad: #f47174;
+    --grid-line: #262b38;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 32px 64px;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  button {
+    background: var(--accent);
+    color: #0f1117;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  #status { font-size: 12px; color: var(--text-dim); }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 24px;
+  }
+  .panel h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 14px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--panel-border); white-space: nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  tbody tr:hover { background: rgba(124, 158, 255, 0.06); }
+  .table-scroll { max-width: 100%; overflow-x: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--text-dim); }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .empty-note { color: var(--text-dim); font-size: 13px; padding: 12px 0; }
+  .rl-card { border: 1px solid var(--panel-border); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+  .rl-card:last-child { margin-bottom: 0; }
+  .rl-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .rl-account { font-weight: 600; font-size: 14px; }
+  .rl-observed { font-size: 11px; color: var(--text-dim); }
+  .rl-window { margin-bottom: 8px; }
+  .rl-window-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+  .meter { background: #262b38; border-radius: 4px; height: 8px; overflow: hidden; }
+  .meter-fill { height: 100%; border-radius: 4px; }
+  .tag { display: inline-block; font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #262b38; color: var(--text-dim); margin-left: 6px; }
+  svg text { fill: var(--text-dim); font-size: 10px; }
+  .tooltip {
+    position: fixed;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    pointer-events: none;
+    display: none;
+    z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+</style>
+
+<h1>Usage AI Dashboard</h1>
+<div class="subtitle">Codex &amp; Claude Code local session usage, aggregated by account / date / model.</div>
+
+<div class="toolbar">
+  <button id="refreshBtn">Refresh data</button>
+  <span id="status"></span>
+</div>
+
+<div class="panel">
+  <h2>Daily token usage (source &times; account)</h2>
+  <div id="trendChart"></div>
+  <div id="trendLegend" class="legend"></div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Account totals</h2>
+    <div class="table-scroll">
+      <table id="accountTable">
+        <thead>
+          <tr>
+            <th>Source</th><th>Account</th><th>Input</th><th>Cached in</th>
+            <th>Output</th><th>Total</th><th>Turns</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Model distribution (by total tokens)</h2>
+    <div id="modelChart"></div>
+    <div id="modelLegend" class="legend"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Codex rate limits</h2>
+  <div id="rateLimits"></div>
+</div>
+
+<div class="panel">
+  <h2>Full breakdown (source &times; account &times; date &times; model)</h2>
+  <div class="table-scroll">
+    <table id="usageTable">
+      <thead>
+        <tr>
+          <th>Source</th><th>Account</th><th>Date</th><th>Model</th>
+          <th>Input</th><th>Cached in</th><th>Output</th><th>Total</th><th>Turns</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+  const PALETTE = ['#7c9eff', '#4fd1a5', '#f5c26b', '#f47174', '#b98cf0', '#5bc8e0', '#e08fd0', '#9fd15a'];
+  const fmt = n => n.toLocaleString('en-US');
+  const tooltip = document.getElementById('tooltip');
+
+  function showTooltip(evt, html) {
+    tooltip.innerHTML = html;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (evt.clientX + 14) + 'px';
+    tooltip.style.top = (evt.clientY + 14) + 'px';
+  }
+  function hideTooltip() { tooltip.style.display = 'none'; }
+
+  function seriesKey(row) {
+    return `${row.source}/${row.account}`;
+  }
+
+  function colorFor(key, keys) {
+    const idx = keys.indexOf(key);
+    return PALETTE[idx % PALETTE.length];
+  }
+
+  async function fetchJson(url, opts) {
+    const res = await fetch(url, opts);
+    if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+    return res.json();
+  }
+
+  function renderAccountTable(rows) {
+    const tbody = document.querySelector('#accountTable tbody');
+    tbody.innerHTML = '';
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-note">No data.</td></tr>';
+      return;
+    }
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.source}</td><td>${r.account}</td>` +
+        `<td>${fmt(r.input_tokens)}</td><td>${fmt(r.cached_input_tokens)}</td>` +
+        `<td>${fmt(r.output_tokens)}</td><td>${fmt(r.total_tokens)}</td><td>${fmt(r.turns)}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function renderUsageTable(rows) {
+    const tbody = document.querySelector('#usageTable tbody');
+    tbody.innerHTML = '';
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-note">No data.</td></tr>';
+      return;
+    }
+    const sorted = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    for (const r of sorted) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.source}</td><td>${r.account}</td><td>${r.date}</td><td>${r.model}</td>` +
+        `<td>${fmt(r.input_tokens)}</td><td>${fmt(r.cached_input_tokens)}</td>` +
+        `<td>${fmt(r.output_tokens)}</td><td>${fmt(r.total_tokens)}</td><td>${fmt(r.turns)}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function renderTrendChart(rows) {
+    const container = document.getElementById('trendChart');
+    const legend = document.getElementById('trendLegend');
+    container.innerHTML = '';
+    legend.innerHTML = '';
+    if (rows.length === 0) {
+      container.innerHTML = '<div class="empty-note">No data.</div>';
+      return;
+    }
+
+    // date -> series -> total_tokens
+    const dates = [...new Set(rows.map(r => r.date))].sort();
+    const keys = [...new Set(rows.map(seriesKey))].sort();
+    const byDateSeries = {};
+    for (const d of dates) byDateSeries[d] = {};
+    for (const r of rows) {
+      const k = seriesKey(r);
+      byDateSeries[r.date][k] = (byDateSeries[r.date][k] || 0) + r.total_tokens;
+    }
+
+    const width = Math.max(600, dates.length * 60);
+    const height = 260;
+    const padL = 56, padR = 16, padT = 12, padB = 28;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
+
+    const maxVal = Math.max(1, ...dates.map(d =>
+      keys.reduce((sum, k) => sum + (byDateSeries[d][k] || 0), 0)
+    ));
+
+    const xStep = dates.length > 1 ? plotW / (dates.length - 1) : 0;
+    const x = i => padL + (dates.length > 1 ? i * xStep : plotW / 2);
+    const yFor = v => padT + plotH - (v / maxVal) * plotH;
+
+    let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" style="max-width:100%;height:auto;display:block">`;
+
+    // gridlines + y labels
+    const gridSteps = 4;
+    for (let i = 0; i <= gridSteps; i++) {
+      const v = (maxVal / gridSteps) * i;
+      const y = yFor(v);
+      svg += `<line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="var(--grid-line)" stroke-width="1"/>`;
+      svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${Math.round(v).toLocaleString('en-US')}</text>`;
+    }
+
+    // x labels (thin out if too many)
+    const labelEvery = Math.max(1, Math.ceil(dates.length / 12));
+    dates.forEach((d, i) => {
+      if (i % labelEvery === 0) {
+        svg += `<text x="${x(i)}" y="${height - 8}" text-anchor="middle">${d.slice(5)}</text>`;
+      }
+    });
+
+    // one stacked-per-series line each (not stacked, overlaid) — simpler & clearer for comparison
+    keys.forEach(k => {
+      const color = colorFor(k, keys);
+      const points = dates.map((d, i) => [x(i), yFor(byDateSeries[d][k] || 0)]);
+      const path = points.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+      svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2"/>`;
+      points.forEach(([px, py], i) => {
+        const val = byDateSeries[dates[i]][k] || 0;
+        svg += `<circle cx="${px}" cy="${py}" r="3" fill="${color}" data-date="${dates[i]}" data-key="${k}" data-val="${val}" class="pt"/>`;
+      });
+    });
+
+    svg += `</svg>`;
+    container.innerHTML = svg;
+
+    container.querySelectorAll('circle.pt').forEach(c => {
+      c.addEventListener('mouseenter', evt => {
+        const d = c.getAttribute('data-date');
+        const k = c.getAttribute('data-key');
+        const v = c.getAttribute('data-val');
+        showTooltip(evt, `<b>${k}</b><br>${d}<br>${fmt(Number(v))} tokens`);
+      });
+      c.addEventListener('mousemove', evt => showTooltip(evt, tooltip.innerHTML));
+      c.addEventListener('mouseleave', hideTooltip);
+    });
+
+    keys.forEach(k => {
+      const color = colorFor(k, keys);
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      item.innerHTML = `<span class="swatch" style="background:${color}"></span>${k}`;
+      legend.appendChild(item);
+    });
+  }
+
+  function renderModelChart(rows) {
+    const container = document.getElementById('modelChart');
+    const legend = document.getElementById('modelLegend');
+    container.innerHTML = '';
+    legend.innerHTML = '';
+    if (rows.length === 0) {
+      container.innerHTML = '<div class="empty-note">No data.</div>';
+      return;
+    }
+
+    const byModel = {};
+    for (const r of rows) {
+      byModel[r.model] = (byModel[r.model] || 0) + r.total_tokens;
+    }
+    const entries = Object.entries(byModel).sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
+    const keys = entries.map(([m]) => m);
+
+    const size = 180, cx = size / 2, cy = size / 2, r = 78;
+    let angle = -Math.PI / 2;
+    let svg = `<svg viewBox="0 0 ${size + 140} ${size}" width="100%" style="max-width:420px;height:auto;display:block">`;
+    entries.forEach(([model, val], i) => {
+      const frac = val / total;
+      const nextAngle = angle + frac * Math.PI * 2;
+      const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
+      const x2 = cx + r * Math.cos(nextAngle), y2 = cy + r * Math.sin(nextAngle);
+      const largeArc = frac > 0.5 ? 1 : 0;
+      const color = PALETTE[i % PALETTE.length];
+      const path = frac >= 0.9999
+        ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.01} ${cy - r} Z`
+        : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+      svg += `<path d="${path}" fill="${color}" stroke="var(--panel)" stroke-width="1.5" class="slice" data-model="${model}" data-val="${val}" data-pct="${(frac*100).toFixed(1)}"/>`;
+      angle = nextAngle;
+    });
+    svg += `</svg>`;
+    container.innerHTML = svg;
+
+    container.querySelectorAll('.slice').forEach(s => {
+      s.addEventListener('mouseenter', evt => {
+        const m = s.getAttribute('data-model');
+        const v = s.getAttribute('data-val');
+        const p = s.getAttribute('data-pct');
+        showTooltip(evt, `<b>${m}</b><br>${fmt(Number(v))} tokens (${p}%)`);
+      });
+      s.addEventListener('mousemove', evt => showTooltip(evt, tooltip.innerHTML));
+      s.addEventListener('mouseleave', hideTooltip);
+    });
+
+    entries.forEach(([model, val], i) => {
+      const color = PALETTE[i % PALETTE.length];
+      const pct = ((val / total) * 100).toFixed(1);
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      item.innerHTML = `<span class="swatch" style="background:${color}"></span>${model} (${pct}%)`;
+      legend.appendChild(item);
+    });
+  }
+
+  function meterColor(pct) {
+    if (pct >= 90) return 'var(--bad)';
+    if (pct >= 70) return 'var(--warn)';
+    return 'var(--good)';
+  }
+
+  function renderRateLimits(snapshots) {
+    const container = document.getElementById('rateLimits');
+    container.innerHTML = '';
+    if (snapshots.length === 0) {
+      container.innerHTML = '<div class="empty-note">No Codex rate limit snapshots found.</div>';
+      return;
+    }
+    for (const snap of snapshots) {
+      const card = document.createElement('div');
+      card.className = 'rl-card';
+      const observed = new Date(snap.observed_at).toLocaleString();
+      let html = `<div class="rl-head">
+        <span class="rl-account">${snap.account}${snap.plan_type ? `<span class="tag">${snap.plan_type}</span>` : ''}</span>
+        <span class="rl-observed">observed ${observed}</span>
+      </div>`;
+
+      const windowHtml = (label, w) => {
+        if (!w) return '';
+        const pct = Math.min(100, w.used_percent);
+        const resets = new Date(w.resets_at * 1000).toLocaleString();
+        return `<div class="rl-window">
+          <div class="rl-window-label"><span>${label} (${w.window_minutes} min window)</span><span>${w.used_percent.toFixed(1)}% used</span></div>
+          <div class="meter"><div class="meter-fill" style="width:${pct}%;background:${meterColor(pct)}"></div></div>
+          <div class="rl-window-label"><span></span><span>resets ${resets}</span></div>
+        </div>`;
+      };
+
+      html += windowHtml('Primary / 5h', snap.primary);
+      html += windowHtml('Secondary / 7d', snap.secondary);
+      if (snap.rate_limit_reached_type) {
+        html += `<div class="rl-window-label" style="color:var(--bad)">rate_limit_reached_type: ${snap.rate_limit_reached_type}</div>`;
+      }
+      card.innerHTML = html;
+      container.appendChild(card);
+    }
+  }
+
+  async function loadAll() {
+    document.getElementById('status').textContent = 'Loading...';
+    try {
+      const [usage, accounts, rateLimits] = await Promise.all([
+        fetchJson('/api/usage'),
+        fetchJson('/api/accounts'),
+        fetchJson('/api/rate_limits'),
+      ]);
+      renderTrendChart(usage);
+      renderAccountTable(accounts);
+      renderModelChart(usage);
+      renderUsageTable(usage);
+      renderRateLimits(rateLimits);
+      document.getElementById('status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    } catch (e) {
+      document.getElementById('status').textContent = 'Error loading data: ' + e.message;
+    }
+  }
+
+  document.getElementById('refreshBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    document.getElementById('status').textContent = 'Refreshing (re-parsing logs)...';
+    try {
+      await fetchJson('/api/refresh', { method: 'POST' });
+      await loadAll();
+    } catch (e) {
+      document.getElementById('status').textContent = 'Refresh failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  loadAll();
+</script>
