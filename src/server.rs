@@ -165,6 +165,7 @@ pub fn run(config: Config, include_dormant_claude: bool) {
     let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
     crate::print_parse_summary(&summary);
 
+    let config_port = config.port();
     let state: SharedState = Arc::new(RwLock::new(AppData {
         records,
         rate_limits,
@@ -185,10 +186,12 @@ pub fn run(config: Config, include_dormant_claude: bool) {
         .build()
         .expect("failed to build tokio runtime");
 
+    // PORT env var overrides config.toml `port`, which overrides the default.
     rt.block_on(async move {
         let port = std::env::var("PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
+            .or(config_port)
             .unwrap_or(DEFAULT_PORT);
         let addr = format!("127.0.0.1:{port}");
         let listener = tokio::net::TcpListener::bind(&addr)

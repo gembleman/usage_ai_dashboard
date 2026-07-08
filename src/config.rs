@@ -29,6 +29,7 @@ struct ClaudeAccountConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
+    port: Option<u16>,
     #[serde(default)]
     codex_accounts: Vec<CodexAccountConfig>,
     #[serde(default)]
@@ -38,11 +39,17 @@ struct RawConfig {
 /// Fully-resolved account configuration.
 #[derive(Debug, Default, Clone)]
 pub struct Config {
+    port: Option<u16>,
     codex: Vec<(CodexAccount, bool)>,
     claude: Vec<(ClaudeAccount, bool)>,
 }
 
 impl Config {
+    /// Server port from `config.toml`, if set.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
     /// Codex accounts, filtered by dormant flag.
     pub fn codex_accounts(&self, include_dormant: bool) -> Vec<CodexAccount> {
         self.codex
@@ -112,7 +119,11 @@ impl Config {
             })
             .collect();
 
-        Ok(Config { codex, claude })
+        Ok(Config {
+            port: raw.port,
+            codex,
+            claude,
+        })
     }
 
     fn find_config_path() -> Option<PathBuf> {
