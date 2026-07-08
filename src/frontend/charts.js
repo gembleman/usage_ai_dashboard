@@ -4,7 +4,7 @@ function renderTrendChart(rows) {
   container.innerHTML = '';
   legend.innerHTML = '';
   if (rows.length === 0) {
-    container.innerHTML = '<div class="empty-note">No data.</div>';
+    container.innerHTML = '<div class="empty-note">데이터가 없습니다.</div>';
     return;
   }
 
@@ -40,7 +40,7 @@ function renderTrendChart(rows) {
     const v = (maxVal / gridSteps) * i;
     const y = yFor(v);
     svg += `<line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="var(--grid-line)" stroke-width="1"/>`;
-    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${Math.round(v).toLocaleString('en-US')}</text>`;
+    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${fmtKo(v)}</text>`;
   }
 
   // x labels (thin out if too many)
@@ -71,7 +71,7 @@ function renderTrendChart(rows) {
       const d = c.getAttribute('data-date');
       const k = c.getAttribute('data-key');
       const v = c.getAttribute('data-val');
-      showTooltip(evt, `<b>${k}</b><br>${d}<br>${fmt(Number(v))} tokens`);
+      showTooltip(evt, `<b>${k}</b><br>${d}<br>${fmtKo(Number(v))} 토큰`);
     });
     c.addEventListener('mousemove', evt => showTooltip(evt, tooltip.innerHTML));
     c.addEventListener('mouseleave', hideTooltip);
@@ -92,17 +92,27 @@ function renderModelChart(rows) {
   container.innerHTML = '';
   legend.innerHTML = '';
   if (rows.length === 0) {
-    container.innerHTML = '<div class="empty-note">No data.</div>';
+    container.innerHTML = '<div class="empty-note">데이터가 없습니다.</div>';
     return;
   }
 
   const byModel = {};
+  const byModelUsage = {};
   for (const r of rows) {
     byModel[r.model] = (byModel[r.model] || 0) + r.total_tokens;
+    const u = byModelUsage[r.model] || { input: 0, cached: 0, output: 0 };
+    u.input += r.input_tokens;
+    u.cached += r.cached_input_tokens;
+    u.output += r.output_tokens;
+    byModelUsage[r.model] = u;
   }
   const entries = Object.entries(byModel).sort((a, b) => b[1] - a[1]);
   const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-  const keys = entries.map(([m]) => m);
+  const totalCost = entries.reduce((s, [m]) => {
+    const u = byModelUsage[m];
+    const c = estimateCostUsd(m, u.input, u.cached, u.output);
+    return s + (c || 0);
+  }, 0);
 
   const size = 180, cx = size / 2, cy = size / 2, r = 78;
   let angle = -Math.PI / 2;
@@ -128,18 +138,27 @@ function renderModelChart(rows) {
       const m = s.getAttribute('data-model');
       const v = s.getAttribute('data-val');
       const p = s.getAttribute('data-pct');
-      showTooltip(evt, `<b>${m}</b><br>${fmt(Number(v))} tokens (${p}%)`);
+      const u = byModelUsage[m];
+      const cost = estimateCostUsd(m, u.input, u.cached, u.output);
+      showTooltip(evt, `<b>${m}</b><br>${fmtKo(Number(v))} 토큰 (${p}%)<br>예상 비용: ${fmtUsd(cost)}`);
     });
     s.addEventListener('mousemove', evt => showTooltip(evt, tooltip.innerHTML));
     s.addEventListener('mouseleave', hideTooltip);
   });
 
+  const totalItem = document.createElement('div');
+  totalItem.className = 'legend-item legend-total';
+  totalItem.innerHTML = `<b>총 예상 비용: ${fmtUsd(totalCost)}</b>`;
+  legend.appendChild(totalItem);
+
   entries.forEach(([model, val], i) => {
     const color = PALETTE[i % PALETTE.length];
     const pct = ((val / total) * 100).toFixed(1);
+    const u = byModelUsage[model];
+    const cost = estimateCostUsd(model, u.input, u.cached, u.output);
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.innerHTML = `<span class="swatch" style="background:${color}"></span>${model} (${pct}%)`;
+    item.innerHTML = `<span class="swatch" style="background:${color}"></span>${model} (${pct}%) — ${fmtUsd(cost)}`;
     legend.appendChild(item);
   });
 }
