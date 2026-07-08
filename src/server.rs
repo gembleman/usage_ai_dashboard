@@ -172,30 +172,6 @@ async fn get_index() -> impl IntoResponse {
     Html(DASHBOARD_HTML)
 }
 
-async fn get_styles() -> impl IntoResponse {
-    static_asset(CSS_CONTENT_TYPE, DASHBOARD_CSS)
-}
-
-async fn get_js_util() -> impl IntoResponse {
-    static_asset(JS_CONTENT_TYPE, JS_UTIL)
-}
-
-async fn get_js_tables() -> impl IntoResponse {
-    static_asset(JS_CONTENT_TYPE, JS_TABLES)
-}
-
-async fn get_js_charts() -> impl IntoResponse {
-    static_asset(JS_CONTENT_TYPE, JS_CHARTS)
-}
-
-async fn get_js_rate_limits() -> impl IntoResponse {
-    static_asset(JS_CONTENT_TYPE, JS_RATE_LIMITS)
-}
-
-async fn get_js_main() -> impl IntoResponse {
-    static_asset(JS_CONTENT_TYPE, JS_MAIN)
-}
-
 /// Build the axum router and block on serving it via a multi-thread tokio
 /// runtime (so blocking parse work can run on the blocking pool).
 pub fn run(config: Config, include_dormant_claude: bool) {
@@ -213,12 +189,30 @@ pub fn run(config: Config, include_dormant_claude: bool) {
 
     let app = Router::new()
         .route("/", get(get_index))
-        .route("/styles.css", get(get_styles))
-        .route("/js/util.js", get(get_js_util))
-        .route("/js/tables.js", get(get_js_tables))
-        .route("/js/charts.js", get(get_js_charts))
-        .route("/js/rate-limits.js", get(get_js_rate_limits))
-        .route("/js/main.js", get(get_js_main))
+        .route(
+            "/styles.css",
+            get(move || async move { static_asset(CSS_CONTENT_TYPE, DASHBOARD_CSS) }),
+        )
+        .route(
+            "/js/util.js",
+            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_UTIL) }),
+        )
+        .route(
+            "/js/tables.js",
+            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_TABLES) }),
+        )
+        .route(
+            "/js/charts.js",
+            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_CHARTS) }),
+        )
+        .route(
+            "/js/rate-limits.js",
+            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_RATE_LIMITS) }),
+        )
+        .route(
+            "/js/main.js",
+            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_MAIN) }),
+        )
         .route("/api/usage", get(get_usage))
         .route("/api/accounts", get(get_accounts))
         .route("/api/rate_limits", get(get_rate_limits))
