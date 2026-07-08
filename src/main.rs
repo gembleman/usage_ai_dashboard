@@ -125,14 +125,15 @@ fn print_account_totals(map: &BTreeMap<AggKey, AggTotals>) {
 
 fn print_rate_limit_snapshots(snapshots: &[RateLimitSnapshot]) {
     println!();
-    println!("=== Codex rate limit snapshots ===");
+    println!("=== Rate limit snapshots (codex + claude_code) ===");
     if snapshots.is_empty() {
         println!("(none found)");
         return;
     }
     for snap in snapshots {
         println!(
-            "account={} observed_at={} limit_id={:?} plan_type={:?}",
+            "source={} account={} observed_at={} limit_id={:?} plan_type={:?}",
+            snap.source,
             snap.account,
             snap.observed_at.to_rfc3339(),
             snap.limit_id,
@@ -154,6 +155,40 @@ fn print_rate_limit_snapshots(snapshots: &[RateLimitSnapshot]) {
                 s.used_percent,
                 s.resets_at,
                 format_epoch(s.resets_at)
+            );
+        }
+        // Claude Code only: model-scoped weekly windows.
+        for (label, window) in [
+            ("opus 7d", &snap.seven_day_opus),
+            ("sonnet 7d", &snap.seven_day_sonnet),
+        ] {
+            if let Some(w) = window {
+                println!(
+                    "  {:<9} ({}min): {:.1}% used, resets_at={} ({})",
+                    label,
+                    w.window_minutes,
+                    w.used_percent,
+                    w.resets_at,
+                    format_epoch(w.resets_at)
+                );
+            }
+        }
+        // Claude Code only: extra-usage credits (present only when enabled).
+        if let Some(extra) = &snap.extra_usage {
+            println!(
+                "  extra usage: {} / {} credits used ({}%)",
+                extra
+                    .used_credits
+                    .map(|v| format!("{v:.2}"))
+                    .unwrap_or_else(|| "?".to_string()),
+                extra
+                    .monthly_limit
+                    .map(|v| format!("{v:.0}"))
+                    .unwrap_or_else(|| "?".to_string()),
+                extra
+                    .utilization
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "?".to_string()),
             );
         }
         if let Some(rt) = &snap.rate_limit_reached_type {
@@ -207,6 +242,11 @@ pub fn parse_all(
             result.records.len(),
         ));
         all_records.extend(result.records);
+        // Rate limits for Claude Code come from the Anthropic OAuth usage API
+        // (not the local transcripts). Any failure yields None and is skipped.
+        if let Some(snap) = claude_code::fetch_rate_limit_snapshot(&account) {
+            rate_limit_snapshots.push(snap);
+        }
     }
 
     let summary = ParseSummary {

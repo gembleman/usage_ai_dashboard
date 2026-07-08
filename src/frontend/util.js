@@ -20,19 +20,18 @@ function fmtKo(n) {
 // 모델별 100만 토큰당 가격 (USD). 알려지지 않은 모델은 undefined 반환.
 const MODEL_PRICING = {
   // Anthropic Claude
-  'claude-opus-4-8': { input: 15, output: 75 },
-  'claude-opus-4-7': { input: 15, output: 75 },
+  'claude-opus-4-8': { input: 5, output: 25 },
+  'claude-opus-4-7': { input: 5, output: 25 },
   'claude-sonnet-5': { input: 3, output: 15 },
   'claude-sonnet-4-6': { input: 3, output: 15 },
-  'claude-fable-5': { input: 1, output: 5 },
-  'claude-haiku-4-5': { input: 0.8, output: 4 },
+  'claude-fable-5': { input: 10, output: 50 },
+  'claude-haiku-4-5': { input: 1, output: 5 },
   // OpenAI Codex / GPT
-  'gpt-5.5': { input: 1.25, output: 10 },
-  'gpt-5.4-mini': { input: 0.25, output: 2 },
-  'gpt-5': { input: 1.25, output: 10 },
-  'gpt-5-mini': { input: 0.25, output: 2 },
+  'gpt-5.5': { input: 5, output: 30 },
+  'gpt-5.4': { input: 2.5, output: 15 },
+  'gpt-5.4-mini': { input: 0.75, output: 4.5 },
+  'gpt-5.4-nano': { input: 0.2, output: 1.25 },
   'gpt-4.1': { input: 2, output: 8 },
-  'gpt-4o': { input: 2.5, output: 10 },
 };
 
 function findPricing(model) {

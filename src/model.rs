@@ -59,10 +59,27 @@ pub struct RateLimitWindowSnapshot {
     pub resets_at: i64,
 }
 
-/// Per-account rate-limit snapshot (Codex only — Claude Code has no local
-/// reset-time information, see design doc §4).
+/// Extra-usage ("pay-as-you-go beyond plan limits") credit state, reported by
+/// the Anthropic OAuth usage API. Claude Code only; only stored when the
+/// account has the feature enabled.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtraUsageSnapshot {
+    /// Monthly credit cap, if configured (API reports it in plan currency).
+    pub monthly_limit: Option<f64>,
+    /// Credits consumed so far this month.
+    pub used_credits: Option<f64>,
+    /// Percent of the monthly cap consumed.
+    pub utilization: Option<f64>,
+}
+
+/// Per-account rate-limit snapshot. Codex snapshots come from the session
+/// JSONL `token_count` events; Claude Code snapshots come from the Anthropic
+/// OAuth usage API (see design doc §4 — the local transcripts carry no
+/// reset-time information). `source` disambiguates the two, since a Codex and
+/// a Claude Code account can share the same display name (e.g. "user01").
 #[derive(Debug, Clone, Serialize)]
 pub struct RateLimitSnapshot {
+    pub source: Source,
     pub account: String,
     /// Timestamp of the token_count event this snapshot was taken from.
     pub observed_at: DateTime<Utc>,
@@ -71,4 +88,10 @@ pub struct RateLimitSnapshot {
     pub rate_limit_reached_type: Option<String>,
     pub primary: Option<RateLimitWindowSnapshot>,
     pub secondary: Option<RateLimitWindowSnapshot>,
+    /// Claude Code only: model-scoped weekly windows (null unless the plan
+    /// enforces per-model caps). Always `None` for Codex.
+    pub seven_day_opus: Option<RateLimitWindowSnapshot>,
+    pub seven_day_sonnet: Option<RateLimitWindowSnapshot>,
+    /// Claude Code only: extra-usage credits, present only when enabled.
+    pub extra_usage: Option<ExtraUsageSnapshot>,
 }

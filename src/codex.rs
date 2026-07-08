@@ -199,12 +199,21 @@ fn parse_file(
                     continue;
                 };
                 if let Some(delta) = info.last_token_usage {
+                    // OpenAI's `input_tokens` is cache-inclusive (cached_input_tokens
+                    // is a subset, not additive) — e.g. input_tokens=16296,
+                    // cached_input_tokens=11648, output_tokens=776,
+                    // total_tokens=17072=input+output. Normalize to the
+                    // claude_code convention (input_tokens excludes cache) so
+                    // downstream cost estimation doesn't double-count the
+                    // cached portion at both full price and cache-read price.
+                    let non_cached_input =
+                        delta.input_tokens.saturating_sub(delta.cached_input_tokens);
                     records.push(UsageRecord {
                         source: Source::Codex,
                         account: account.to_string(),
                         timestamp,
                         model: current_model.clone(),
-                        input_tokens: delta.input_tokens,
+                        input_tokens: non_cached_input,
                         cached_input_tokens: delta.cached_input_tokens,
                         output_tokens: delta.output_tokens,
                         reasoning_output_tokens: delta.reasoning_output_tokens,
@@ -223,6 +232,7 @@ fn parse_file(
                             .unwrap_or(true);
                         if is_newer {
                             *latest_snapshot = Some(RateLimitSnapshot {
+                                source: Source::Codex,
                                 account: account.to_string(),
                                 observed_at: timestamp,
                                 limit_id: rl.limit_id,
@@ -238,6 +248,10 @@ fn parse_file(
                                     window_minutes: w.window_minutes,
                                     resets_at: w.resets_at,
                                 }),
+                                // Claude Code (OAuth usage API) only.
+                                seven_day_opus: None,
+                                seven_day_sonnet: None,
+                                extra_usage: None,
                             });
                         }
                     }
@@ -278,6 +292,26 @@ mod tests {
         assert_eq!(total_input, 250);
         assert_eq!(total_total, 280);
         assert_eq!(records[0].model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn normalizes_input_tokens_to_exclude_cache() {
+        // OpenAI's input_tokens is cache-inclusive: cached_input_tokens is a
+        // subset, not additive (input_tokens=16296, cached=11648,
+        // output=776, total=17072=input+output). We store input_tokens as
+        // the non-cached remainder so cost estimation doesn't double-count.
+        let lines = vec![
+            r#"{"timestamp":"2026-06-26T15:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":16296,"cached_input_tokens":11648,"output_tokens":776,"reasoning_output_tokens":516,"total_tokens":17072}},"rate_limits":null}}"#,
+        ];
+        let tmp = write_temp_jsonl(&lines);
+        let mut records = Vec::new();
+        let mut snapshot = None;
+        parse_file(&tmp.path, "user01", &mut records, &mut snapshot);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 16296 - 11648);
+        assert_eq!(records[0].cached_input_tokens, 11648);
+        assert_eq!(records[0].total_tokens, 17072); // original total left untouched
     }
 
     #[test]

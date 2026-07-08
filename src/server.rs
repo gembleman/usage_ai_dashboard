@@ -127,7 +127,8 @@ async fn get_accounts(State(state): State<SharedState>) -> impl IntoResponse {
     Json(rows)
 }
 
-/// GET /api/rate_limits - latest Codex rate limit snapshot per account.
+/// GET /api/rate_limits - latest rate limit snapshot per (source, account).
+/// Codex snapshots come from session logs; claude_code from the OAuth usage API.
 async fn get_rate_limits(State(state): State<SharedState>) -> impl IntoResponse {
     let data = state.read().unwrap();
     Json(data.rate_limits.clone())
@@ -140,8 +141,9 @@ struct RefreshResponse {
     rate_limit_count: usize,
 }
 
-/// POST /api/refresh - re-run the parsers, replace the in-memory state, and
-/// overwrite the on-disk cache.
+/// POST /api/refresh - re-run the parsers, merge the result into the on-disk
+/// cache, and replace the in-memory state with the merged history (so records
+/// preserved from rotated-out session logs stay visible).
 async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
     let (config, include_dormant_claude) = {
         let data = state.read().unwrap();
@@ -152,11 +154,21 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
     let config_dir = config.config_dir().map(|p| p.to_path_buf());
     let (records, rate_limits, _summary) = tokio::task::spawn_blocking(move || {
         let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
-        if let Ok(mut cache) = Cache::open(config_dir.as_deref()) {
-            if let Err(e) = cache.save(&records, &rate_limits) {
-                eprintln!("Warning: failed to write cache: {e}");
+        let merged = match Cache::open(config_dir.as_deref()) {
+            Ok(mut cache) => match cache.save(&records, &rate_limits) {
+                Ok(()) => cache.load().ok().flatten(),
+                Err(e) => {
+                    eprintln!("Warning: failed to write cache: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                eprintln!("Warning: failed to open cache: {e}");
+                None
             }
-        }
+        };
+        // If the cache is unavailable, fall back to just the fresh parse.
+        let (records, rate_limits) = merged.unwrap_or((records, rate_limits));
         (records, rate_limits, summary)
     })
     .await

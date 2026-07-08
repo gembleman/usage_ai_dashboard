@@ -18,7 +18,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use walkdir::WalkDir;
 
-use crate::model::{Source, UsageRecord};
+use crate::model::{
+    ExtraUsageSnapshot, RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord,
+};
 
 /// One account's CLAUDE_CONFIG_DIR configuration.
 #[derive(Debug, Clone)]
@@ -230,6 +232,234 @@ fn parse_file(
     flush(current_group, records);
 }
 
+// ---------------------------------------------------------------------------
+// Rate-limit snapshot via the Anthropic OAuth usage API.
+//
+// Claude Code does not persist rate-limit / reset-time information in its local
+// transcripts (see docs/claude-code-usage-parsing-design.md §4), so unlike
+// Codex we cannot derive a snapshot from disk. Instead we read the OAuth access
+// token from `<config_dir>/.credentials.json` and call the undocumented
+// `GET https://api.anthropic.com/api/oauth/usage` endpoint, which returns the
+// 5-hour ("session") and 7-day ("weekly") window utilization plus reset times.
+//
+// Hard rules (do NOT relax without re-reading the task brief):
+//   * Never refresh the token and never write to `.credentials.json`. A refresh
+//     would rotate the refresh token and break the user's Claude Code login.
+//   * If the token is expired, skip the call entirely (no snapshot).
+//   * Any network / HTTP / parse failure is swallowed → no snapshot, so a
+//     transient API outage never fails the whole dashboard parse.
+//   * Never log or otherwise surface the token value.
+// ---------------------------------------------------------------------------
+
+/// 5-hour ("session") window length in minutes, mirrored into the shared
+/// `RateLimitWindowSnapshot` so the frontend can render a window label.
+const FIVE_HOUR_WINDOW_MINUTES: u64 = 5 * 60;
+/// 7-day ("weekly") window length in minutes.
+const SEVEN_DAY_WINDOW_MINUTES: u64 = 7 * 24 * 60;
+
+/// Shape of `<config_dir>/.credentials.json`. We only read the fields we need;
+/// everything else is ignored. We never write this file back.
+#[derive(Debug, Deserialize)]
+struct CredentialsFile {
+    #[serde(rename = "claudeAiOauth")]
+    claude_ai_oauth: Option<OauthCredentials>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OauthCredentials {
+    #[serde(rename = "accessToken")]
+    access_token: Option<String>,
+    /// Expiry as a millisecond epoch.
+    #[serde(rename = "expiresAt")]
+    expires_at: Option<i64>,
+    #[serde(rename = "subscriptionType")]
+    subscription_type: Option<String>,
+    #[serde(rename = "rateLimitTier")]
+    rate_limit_tier: Option<String>,
+}
+
+/// One usage window in the `/api/oauth/usage` response. `resets_at` is an
+/// ISO-8601 string here (Codex uses epoch seconds); we normalize on mapping.
+#[derive(Debug, Deserialize)]
+struct UsageWindow {
+    #[serde(default)]
+    utilization: Option<f64>,
+    #[serde(default)]
+    resets_at: Option<String>,
+}
+
+/// `extra_usage` block of the `/api/oauth/usage` response: pay-as-you-go
+/// credits consumed once the plan windows are exhausted.
+#[derive(Debug, Deserialize)]
+struct ExtraUsage {
+    #[serde(default)]
+    is_enabled: bool,
+    #[serde(default)]
+    monthly_limit: Option<f64>,
+    #[serde(default)]
+    used_credits: Option<f64>,
+    #[serde(default)]
+    utilization: Option<f64>,
+}
+
+/// Subset of the `/api/oauth/usage` response we consume. The endpoint returns
+/// many more (mostly-null) window keys; serde ignores unknown fields. Parse
+/// leniently: Enterprise accounts can have `five_hour`/`seven_day` null with
+/// only `extra_usage` populated (cship issue #173), and per-model weekly
+/// windows are null unless the plan enforces them.
+#[derive(Debug, Deserialize)]
+struct OauthUsageResponse {
+    #[serde(default)]
+    five_hour: Option<UsageWindow>,
+    #[serde(default)]
+    seven_day: Option<UsageWindow>,
+    #[serde(default)]
+    seven_day_opus: Option<UsageWindow>,
+    #[serde(default)]
+    seven_day_sonnet: Option<UsageWindow>,
+    #[serde(default)]
+    extra_usage: Option<ExtraUsage>,
+}
+
+/// Read the OAuth access token (and plan metadata) for an account. Returns
+/// `None` if the file is missing/unreadable, has no `claudeAiOauth` block, has
+/// no access token, or the token is already expired.
+fn read_oauth_credentials(account: &ClaudeAccount) -> Option<OauthCredentials> {
+    let path = account.config_dir.join(".credentials.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let parsed: CredentialsFile = serde_json::from_str(&text).ok()?;
+    let oauth = parsed.claude_ai_oauth?;
+    oauth.access_token.as_ref()?;
+
+    if let Some(expires_at_ms) = oauth.expires_at {
+        let now_ms = Utc::now().timestamp_millis();
+        if expires_at_ms <= now_ms {
+            // Expired: do not attempt the call (and never refresh).
+            eprintln!(
+                "claude_code/{}: OAuth token expired; skipping rate-limit fetch (no refresh by design).",
+                account.name
+            );
+            return None;
+        }
+    }
+
+    Some(oauth)
+}
+
+/// Map one API `UsageWindow` to the shared `RateLimitWindowSnapshot`, converting
+/// the ISO-8601 `resets_at` to epoch seconds. Returns `None` if the window has
+/// no utilization value.
+fn to_window_snapshot(w: &UsageWindow, window_minutes: u64) -> Option<RateLimitWindowSnapshot> {
+    let used_percent = w.utilization?;
+    let resets_at = w
+        .resets_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0);
+    Some(RateLimitWindowSnapshot {
+        used_percent,
+        window_minutes,
+        resets_at,
+    })
+}
+
+/// Fetch a Claude Code rate-limit snapshot for one account from the Anthropic
+/// OAuth usage API. Returns `None` on any failure (missing/expired token,
+/// network error, non-2xx status, unparseable body) — callers treat that as
+/// "no snapshot" rather than an error.
+pub fn fetch_rate_limit_snapshot(account: &ClaudeAccount) -> Option<RateLimitSnapshot> {
+    let oauth = read_oauth_credentials(account)?;
+    let token = oauth.access_token.as_deref()?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .ok()?;
+
+    // The `User-Agent: claude-code/...` header matters: without it the endpoint
+    // buckets requests aggressively and returns persistent 429s.
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "claude-code/1.0.0")
+        .header("Content-Type", "application/json")
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        eprintln!(
+            "claude_code/{}: OAuth usage API returned {}; skipping rate-limit snapshot.",
+            account.name,
+            resp.status()
+        );
+        return None;
+    }
+
+    let usage: OauthUsageResponse = resp.json().ok()?;
+
+    let primary = usage
+        .five_hour
+        .as_ref()
+        .and_then(|w| to_window_snapshot(w, FIVE_HOUR_WINDOW_MINUTES));
+    let secondary = usage
+        .seven_day
+        .as_ref()
+        .and_then(|w| to_window_snapshot(w, SEVEN_DAY_WINDOW_MINUTES));
+    // Model-scoped weekly windows: null unless the plan enforces per-model caps.
+    let seven_day_opus = usage
+        .seven_day_opus
+        .as_ref()
+        .and_then(|w| to_window_snapshot(w, SEVEN_DAY_WINDOW_MINUTES));
+    let seven_day_sonnet = usage
+        .seven_day_sonnet
+        .as_ref()
+        .and_then(|w| to_window_snapshot(w, SEVEN_DAY_WINDOW_MINUTES));
+    // Extra-usage credits: only surfaced when the account has them enabled.
+    let extra_usage = usage
+        .extra_usage
+        .as_ref()
+        .filter(|e| e.is_enabled)
+        .map(|e| ExtraUsageSnapshot {
+            monthly_limit: e.monthly_limit,
+            used_credits: e.used_credits,
+            utilization: e.utilization,
+        });
+
+    // Nothing usable came back — don't emit an empty snapshot. (Enterprise
+    // accounts may have only extra_usage populated, which still counts.)
+    if primary.is_none()
+        && secondary.is_none()
+        && seven_day_opus.is_none()
+        && seven_day_sonnet.is_none()
+        && extra_usage.is_none()
+    {
+        return None;
+    }
+
+    // plan_type: prefer subscriptionType (e.g. "pro"/"max"), fall back to the
+    // rateLimitTier so there's always something to show.
+    let plan_type = oauth
+        .subscription_type
+        .clone()
+        .or_else(|| oauth.rate_limit_tier.clone());
+
+    Some(RateLimitSnapshot {
+        source: Source::ClaudeCode,
+        account: account.name.clone(),
+        observed_at: Utc::now(),
+        limit_id: None,
+        plan_type,
+        rate_limit_reached_type: None,
+        primary,
+        secondary,
+        seven_day_opus,
+        seven_day_sonnet,
+        extra_usage,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +511,82 @@ mod tests {
         let mut records2 = Vec::new();
         parse_file(&tmp.path, "user01", true, &mut records2);
         assert!(records2[0].is_subagent);
+    }
+
+    #[test]
+    fn parses_oauth_usage_response_and_maps_windows() {
+        // Trimmed real /api/oauth/usage payload (extra window keys omitted;
+        // serde ignores unknown fields).
+        let body = r#"{
+            "five_hour": {"utilization": 99.0, "resets_at": "2026-07-08T14:20:00.472088+00:00"},
+            "seven_day": {"utilization": 49.0, "resets_at": "2026-07-14T00:00:00.472119+00:00"},
+            "seven_day_opus": null,
+            "seven_day_sonnet": {"utilization": 12.5, "resets_at": "2026-07-14T00:00:00+00:00"},
+            "extra_usage": {"is_enabled": false, "monthly_limit": null, "used_credits": null, "utilization": null}
+        }"#;
+        let usage: OauthUsageResponse = serde_json::from_str(body).unwrap();
+
+        let primary = usage
+            .five_hour
+            .as_ref()
+            .and_then(|w| to_window_snapshot(w, FIVE_HOUR_WINDOW_MINUTES))
+            .expect("five_hour window");
+        assert_eq!(primary.used_percent, 99.0);
+        assert_eq!(primary.window_minutes, 300);
+        // 2026-07-08T14:20:00Z -> epoch seconds.
+        assert_eq!(
+            primary.resets_at,
+            DateTime::parse_from_rfc3339("2026-07-08T14:20:00.472088+00:00")
+                .unwrap()
+                .timestamp()
+        );
+
+        let secondary = usage
+            .seven_day
+            .as_ref()
+            .and_then(|w| to_window_snapshot(w, SEVEN_DAY_WINDOW_MINUTES))
+            .expect("seven_day window");
+        assert_eq!(secondary.used_percent, 49.0);
+        assert_eq!(secondary.window_minutes, 10080);
+
+        // Model-scoped weekly windows: opus null → skipped, sonnet mapped.
+        assert!(usage.seven_day_opus.is_none());
+        let sonnet = usage
+            .seven_day_sonnet
+            .as_ref()
+            .and_then(|w| to_window_snapshot(w, SEVEN_DAY_WINDOW_MINUTES))
+            .expect("seven_day_sonnet window");
+        assert_eq!(sonnet.used_percent, 12.5);
+
+        // extra_usage with is_enabled=false must be dropped.
+        assert!(!usage.extra_usage.as_ref().unwrap().is_enabled);
+    }
+
+    #[test]
+    fn parses_enabled_extra_usage_and_tolerates_null_windows() {
+        // Enterprise-style payload: plan windows null, only extra_usage set
+        // (see cship issue #173) — parsing must stay lenient.
+        let body = r#"{
+            "five_hour": null,
+            "seven_day": null,
+            "extra_usage": {"is_enabled": true, "monthly_limit": 5000, "used_credits": 123.45, "utilization": 2.5}
+        }"#;
+        let usage: OauthUsageResponse = serde_json::from_str(body).unwrap();
+        assert!(usage.five_hour.is_none());
+        assert!(usage.seven_day.is_none());
+        let extra = usage.extra_usage.as_ref().unwrap();
+        assert!(extra.is_enabled);
+        assert_eq!(extra.monthly_limit, Some(5000.0));
+        assert_eq!(extra.used_credits, Some(123.45));
+        assert_eq!(extra.utilization, Some(2.5));
+    }
+
+    #[test]
+    fn window_without_utilization_is_skipped() {
+        let w = UsageWindow {
+            utilization: None,
+            resets_at: Some("2026-07-08T14:20:00+00:00".to_string()),
+        };
+        assert!(to_window_snapshot(&w, FIVE_HOUR_WINDOW_MINUTES).is_none());
     }
 }
