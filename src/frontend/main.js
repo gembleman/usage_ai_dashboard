@@ -1,27 +1,32 @@
+import { emptyNote, emptyTableRow, fetchJson } from './util.js';
+import { renderRateLimits } from './rate-limits.js';
+import {
+  renderGlobalFilteredPanels,
+  setGlobalRange,
+  setUsageTableAccount,
+  setUsageTableSource,
+} from './tables.js';
+
 // 지정된 컨테이너 id에 에러 메시지를 표시한다 (해당 패널이 의존하는 API가 실패한 경우).
-// <table> 요소는 직접 innerHTML을 대입하면 마크업이 깨지므로 tbody를 대상으로 한다.
 function showPanelError(containerId, message, colspan) {
   const el = document.getElementById(containerId);
   if (!el) return;
-  const noteHtml = `<div class="empty-note">${escapeHtml(message)}</div>`;
   if (el.tagName === 'TABLE') {
     const tbody = el.querySelector('tbody') || el;
-    tbody.innerHTML = colspan
-      ? `<tr><td colspan="${colspan}" class="empty-note">${escapeHtml(message)}</td></tr>`
-      : noteHtml;
+    tbody.replaceChildren(colspan ? emptyTableRow(colspan, message) : emptyNote(message));
   } else {
-    el.innerHTML = noteHtml;
+    el.replaceChildren(emptyNote(message));
   }
 }
 
 function showUsagePanelErrors(message) {
   showPanelError('trendChart', message);
-  document.getElementById('trendLegend').innerHTML = '';
+  document.getElementById('trendLegend').replaceChildren();
   showPanelError('accountTable', message, 8);
   showPanelError('modelChart', message);
-  document.getElementById('modelLegend').innerHTML = '';
+  document.getElementById('modelLegend').replaceChildren();
   showPanelError('usageTable', message, 10);
-  document.getElementById('usagePagination').innerHTML = '';
+  document.getElementById('usagePagination').replaceChildren();
 }
 
 async function loadAll() {
@@ -62,7 +67,7 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
   btn.disabled = true;
   document.getElementById('status').textContent = '새로고침 중 (로그 재분석)...';
   try {
-    await fetchJson('/api/refresh', { method: 'POST' });
+    await fetchJson('/api/refresh', { method: 'POST', timeoutMs: 120000 });
     await loadAll();
   } catch (e) {
     document.getElementById('status').textContent = '새로고침 실패: ' + e.message;

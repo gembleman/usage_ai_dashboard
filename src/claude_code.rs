@@ -197,9 +197,11 @@ fn parse_file(
             timestamp,
             model: message.model.clone(),
             input_tokens: usage.input_tokens,
-            cached_input_tokens: usage
-                .cache_creation_input_tokens
-                .saturating_add(usage.cache_read_input_tokens),
+            // Keep creation and read separate — they bill at very different
+            // rates (creation ~1.25x base, read ~0.1x base), so merging them
+            // (as this parser once did) systematically under-estimates cost.
+            cached_input_tokens: usage.cache_read_input_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
             output_tokens,
             reasoning_output_tokens: 0,
             total_tokens: usage

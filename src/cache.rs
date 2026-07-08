@@ -32,7 +32,12 @@ const DB_FILE_NAME: &str = "cache.sqlite3";
 /// ("YYYY-MM-DDTHH:MM:SS.sssZ") so plain string comparison is
 /// chronological and the delete-window query can use the index instead
 /// of wrapping both sides in `datetime()` (a full-table scan).
-const SCHEMA_VERSION: i64 = 4;
+/// v5: `usage_records` gains a `cache_creation_input_tokens` column so
+///     cache-creation and cache-read tokens are stored separately.
+///     Previously they were merged into `cached_input_tokens`, which
+///     caused cost estimates to under-report by ~20% (creation bills
+///     at 1.25x vs read at 0.1x base input rate).
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS usage_records (
@@ -42,6 +47,7 @@ const SCHEMA_SQL: &str = "
         model TEXT,
         input_tokens INTEGER NOT NULL,
         cached_input_tokens INTEGER NOT NULL,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
         output_tokens INTEGER NOT NULL,
         reasoning_output_tokens INTEGER NOT NULL,
         total_tokens INTEGER NOT NULL,
@@ -128,6 +134,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    if version < 5 {
+        // Split cache tokens: add the creation column. Existing rows get 0
+        // (cache-creation was previously folded into cached_input_tokens;
+        // there is no way to retroactively split them, but new parses will
+        // populate both columns correctly going forward).
+        let _ = conn.execute(
+            "ALTER TABLE usage_records ADD COLUMN cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
     if version < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -210,8 +226,9 @@ impl Cache {
             let mut stmt = tx.prepare(
                 "INSERT INTO usage_records (
                     source, account, timestamp, model, input_tokens, cached_input_tokens,
+                    cache_creation_input_tokens,
                     output_tokens, reasoning_output_tokens, total_tokens, is_subagent
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             for r in records {
                 stmt.execute(params![
@@ -221,6 +238,7 @@ impl Cache {
                     r.model,
                     r.input_tokens as i64,
                     r.cached_input_tokens as i64,
+                    r.cache_creation_input_tokens as i64,
                     r.output_tokens as i64,
                     r.reasoning_output_tokens as i64,
                     r.total_tokens as i64,
@@ -283,6 +301,7 @@ impl Cache {
 
         let mut stmt = self.conn.prepare(
             "SELECT source, account, timestamp, model, input_tokens, cached_input_tokens,
+                    cache_creation_input_tokens,
                     output_tokens, reasoning_output_tokens, total_tokens, is_subagent
              FROM usage_records",
         )?;
@@ -290,7 +309,7 @@ impl Cache {
             .query_map([], |row| {
                 let source: String = row.get(0)?;
                 let timestamp: String = row.get(2)?;
-                let is_subagent: i64 = row.get(9)?;
+                let is_subagent: i64 = row.get(10)?;
                 Ok(UsageRecord {
                     source: Source::from_str(&source).unwrap_or(Source::Codex),
                     account: row.get(1)?,
@@ -298,9 +317,10 @@ impl Cache {
                     model: row.get(3)?,
                     input_tokens: row.get::<_, i64>(4)? as u64,
                     cached_input_tokens: row.get::<_, i64>(5)? as u64,
-                    output_tokens: row.get::<_, i64>(6)? as u64,
-                    reasoning_output_tokens: row.get::<_, i64>(7)? as u64,
-                    total_tokens: row.get::<_, i64>(8)? as u64,
+                    cache_creation_input_tokens: row.get::<_, i64>(6)? as u64,
+                    output_tokens: row.get::<_, i64>(7)? as u64,
+                    reasoning_output_tokens: row.get::<_, i64>(8)? as u64,
+                    total_tokens: row.get::<_, i64>(9)? as u64,
                     is_subagent: is_subagent != 0,
                 })
             })?
@@ -388,6 +408,7 @@ mod tests {
             model: None,
             input_tokens,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: input_tokens,
@@ -550,8 +571,8 @@ mod tests {
         // deleted by save()'s replace window, duplicating history.
         conn.execute(
             "INSERT INTO usage_records VALUES
-                ('codex', 'a', '2026-06-01T12:00:00+00:00', NULL, 10, 0, 0, 0, 10, 0),
-                ('codex', 'a', '2026-06-20T08:30:00.123456+00:00', NULL, 20, 0, 0, 0, 20, 0)",
+                ('codex', 'a', '2026-06-01T12:00:00+00:00', NULL, 10, 0, 0, 0, 0, 10, 0),
+                ('codex', 'a', '2026-06-20T08:30:00.123456+00:00', NULL, 20, 0, 0, 0, 0, 20, 0)",
             [],
         )
         .unwrap();
@@ -593,8 +614,8 @@ mod tests {
         // v0 rows: codex input_tokens included the cached portion.
         conn.execute(
             "INSERT INTO usage_records VALUES
-                ('codex', 'a', '2026-06-01T00:00:00+00:00', NULL, 1000, 800, 0, 0, 1000, 0),
-                ('claude_code', 'b', '2026-06-01T00:00:00+00:00', NULL, 1000, 800, 0, 0, 1800, 0)",
+                ('codex', 'a', '2026-06-01T00:00:00+00:00', NULL, 1000, 800, 0, 0, 0, 1000, 0),
+                ('claude_code', 'b', '2026-06-01T00:00:00+00:00', NULL, 1000, 800, 0, 0, 0, 1800, 0)",
             [],
         )
         .unwrap();

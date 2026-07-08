@@ -1,3 +1,13 @@
+import {
+  SOURCE_LABELS,
+  emptyTableRow,
+  estimateCostUsd,
+  fmt,
+  fmtKo,
+  fmtUsd,
+} from './util.js';
+import { renderModelChart, renderTrendChart } from './charts.js';
+
 const ACCOUNT_RANGE_DAYS = { '1d': 1, '7d': 7, '30d': 30, '365d': 365, all: null };
 
 // 대시보드 전역 기간 필터 상태. 트렌드 차트/계정별 합계/모델별 분포가 모두 이 값을 참조한다.
@@ -16,12 +26,12 @@ function filterUsageRowsByRange(usageRows, range) {
 
 // 원본 usage 데이터를 저장하고, 현재 선택된 전역 기간으로 필터링해
 // 트렌드 차트 / 계정별 합계 / 모델별 분포를 다시 그린다.
-function renderGlobalFilteredPanels(usageRows) {
+export function renderGlobalFilteredPanels(usageRows) {
   globalRangeState.rawRows = usageRows || [];
   applyGlobalRangeFilter();
 }
 
-function setGlobalRange(range) {
+export function setGlobalRange(range) {
   globalRangeState.range = range;
   applyGlobalRangeFilter();
 
@@ -33,7 +43,11 @@ function setGlobalRange(range) {
 }
 
 function applyGlobalRangeFilter() {
-  const filtered = filterUsageRowsByRange(globalRangeState.rawRows, globalRangeState.range);
+  const ranged = filterUsageRowsByRange(globalRangeState.rawRows, globalRangeState.range);
+  // <synthetic>은 Claude Code가 토큰 사용 없는 턴(API 에러 등)에 남기는
+  // 플레이스홀더 모델명이라 모든 패널에서 제외한다. 이전에는 상세 테이블만
+  // 제외해 계정별 합계 turns가 불일치하는 문제가 있었다.
+  const filtered = ranged.filter(r => r.model !== '<synthetic>');
   renderAccountTable(filtered);
   renderTrendChart(filtered);
   renderModelChart(filtered);
@@ -50,37 +64,53 @@ function aggregateAccountRows(usageRows) {
     const key = `${r.source}/${r.account}`;
     let g = groups.get(key);
     if (!g) {
-      g = { source: r.source, account: r.account, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+      g = { source: r.source, account: r.account, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
       groups.set(key, g);
     }
     g.input_tokens += r.input_tokens;
     g.cached_input_tokens += r.cached_input_tokens;
+    g.cache_creation_input_tokens += (r.cache_creation_input_tokens || 0);
     g.output_tokens += r.output_tokens;
     g.total_tokens += r.total_tokens;
     g.turns += r.turns;
-    const c = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.output_tokens);
+    const c = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
     if (c != null) { g.cost += c; g.hasCost = true; }
   }
   return [...groups.values()].sort((a, b) => a.source.localeCompare(b.source) || a.account.localeCompare(b.account));
 }
 
+function appendTextCell(tr, text, title) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  if (title) td.title = title;
+  tr.appendChild(td);
+}
+
+function appendAccountRow(parent, r) {
+  const tr = document.createElement('tr');
+  appendTextCell(tr, SOURCE_LABELS[r.source] || r.source);
+  appendTextCell(tr, r.account);
+  appendTextCell(tr, fmtKo(r.input_tokens), fmt(r.input_tokens));
+  appendTextCell(tr, fmtKo(r.cached_input_tokens), fmt(r.cached_input_tokens));
+  appendTextCell(tr, fmtKo(r.output_tokens), fmt(r.output_tokens));
+  appendTextCell(tr, fmtKo(r.total_tokens), fmt(r.total_tokens));
+  appendTextCell(tr, fmt(r.turns));
+  appendTextCell(tr, fmtUsd(r.hasCost ? r.cost : null));
+  parent.appendChild(tr);
+}
+
 function renderAccountTable(usageRows) {
   const rows = aggregateAccountRows(usageRows || []);
-
   const tbody = document.querySelector('#accountTable tbody');
-  tbody.innerHTML = '';
+
   if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-note">데이터가 없습니다.</td></tr>';
+    tbody.replaceChildren(emptyTableRow(8, '데이터가 없습니다.'));
     return;
   }
-  for (const r of rows) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td><td>${escapeHtml(r.account)}</td>` +
-      `<td title="${fmt(r.input_tokens)}">${fmtKo(r.input_tokens)}</td><td title="${fmt(r.cached_input_tokens)}">${fmtKo(r.cached_input_tokens)}</td>` +
-      `<td title="${fmt(r.output_tokens)}">${fmtKo(r.output_tokens)}</td><td title="${fmt(r.total_tokens)}">${fmtKo(r.total_tokens)}</td>` +
-      `<td>${fmt(r.turns)}</td><td>${fmtUsd(r.hasCost ? r.cost : null)}</td>`;
-    tbody.appendChild(tr);
-  }
+
+  const fragment = document.createDocumentFragment();
+  for (const r of rows) appendAccountRow(fragment, r);
+  tbody.replaceChildren(fragment);
 }
 
 const USAGE_PAGE_SIZE = 50;
@@ -92,14 +122,15 @@ function aggregateUsageRows(rows) {
   const groups = new Map();
   for (const r of rows) {
     const key = `${r.source}/${r.account}/${r.date}/${r.model}`;
-    const cost = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.output_tokens);
+    const cost = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
     let g = groups.get(key);
     if (!g) {
-      g = { source: r.source, account: r.account, date: r.date, model: r.model, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+      g = { source: r.source, account: r.account, date: r.date, model: r.model, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
       groups.set(key, g);
     }
     g.input_tokens += r.input_tokens;
     g.cached_input_tokens += r.cached_input_tokens;
+    g.cache_creation_input_tokens += (r.cache_creation_input_tokens || 0);
     g.output_tokens += r.output_tokens;
     g.total_tokens += r.total_tokens;
     g.turns += r.turns;
@@ -121,14 +152,16 @@ function updateAccountOptions(rows, source) {
   const scoped = filterBySource(rows, source);
   const accounts = [...new Set(scoped.map(r => r.account))].sort();
   const current = select.value || 'all';
-  select.innerHTML = '<option value="all">전체 (합산)</option>' +
-    accounts.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  select.replaceChildren(
+    new Option('전체 (합산)', 'all'),
+    ...accounts.map(a => new Option(a, a))
+  );
   const next = accounts.includes(current) ? current : 'all';
   select.value = next;
   return next;
 }
 
-function renderUsageTable(rows) {
+export function renderUsageTable(rows) {
   usageTableState.raw = rows;
   const account = updateAccountOptions(rows, usageTableState.source);
   usageTableState.account = account;
@@ -145,16 +178,13 @@ function filterByAccount(rows, account) {
 
 function applyUsageTableFilters() {
   const { raw, source, account } = usageTableState;
-  // "<synthetic>"은 Claude Code가 토큰 사용 없는 턴(API 에러 등)에 남기는
-  // 플레이스홀더 모델명이라 상세 내역에서는 노이즈이므로 제외한다.
-  const real = raw.filter(r => r.model !== '<synthetic>');
-  const filtered = filterByAccount(filterBySource(real, source), account);
+  const filtered = filterByAccount(filterBySource(raw, source), account);
   usageTableState.sorted = aggregateUsageRows(filtered);
   usageTableState.page = 1;
   renderUsageTablePage();
 }
 
-function setUsageTableSource(source) {
+export function setUsageTableSource(source) {
   usageTableState.source = source;
   // 소스가 바뀌면 계정 목록도 해당 소스 기준으로 갱신하고, 기존 선택 계정이
   // 새 목록에 없으면 "전체"로 되돌린다.
@@ -168,20 +198,34 @@ function setUsageTableSource(source) {
   });
 }
 
-function setUsageTableAccount(account) {
+export function setUsageTableAccount(account) {
   usageTableState.account = account;
   applyUsageTableFilters();
+}
+
+function appendUsageRow(parent, r) {
+  const tr = document.createElement('tr');
+  appendTextCell(tr, SOURCE_LABELS[r.source] || r.source);
+  appendTextCell(tr, r.account);
+  appendTextCell(tr, r.date);
+  appendTextCell(tr, r.model);
+  appendTextCell(tr, fmtKo(r.input_tokens), fmt(r.input_tokens));
+  appendTextCell(tr, fmtKo(r.cached_input_tokens), fmt(r.cached_input_tokens));
+  appendTextCell(tr, fmtKo(r.output_tokens), fmt(r.output_tokens));
+  appendTextCell(tr, fmtKo(r.total_tokens), fmt(r.total_tokens));
+  appendTextCell(tr, fmt(r.turns));
+  appendTextCell(tr, fmtUsd(r.hasCost ? r.cost : null));
+  parent.appendChild(tr);
 }
 
 function renderUsageTablePage() {
   const { sorted, page } = usageTableState;
   const tbody = document.querySelector('#usageTable tbody');
   const pagination = document.getElementById('usagePagination');
-  tbody.innerHTML = '';
-  pagination.innerHTML = '';
+  pagination.replaceChildren();
 
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty-note">데이터가 없습니다.</td></tr>';
+    tbody.replaceChildren(emptyTableRow(10, '데이터가 없습니다.'));
     return;
   }
 
@@ -192,14 +236,9 @@ function renderUsageTablePage() {
   const start = (clampedPage - 1) * USAGE_PAGE_SIZE;
   const pageRows = sorted.slice(start, start + USAGE_PAGE_SIZE);
 
-  for (const r of pageRows) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td><td>${escapeHtml(r.account)}</td><td>${escapeHtml(r.date)}</td><td>${escapeHtml(r.model)}</td>` +
-      `<td title="${fmt(r.input_tokens)}">${fmtKo(r.input_tokens)}</td><td title="${fmt(r.cached_input_tokens)}">${fmtKo(r.cached_input_tokens)}</td>` +
-      `<td title="${fmt(r.output_tokens)}">${fmtKo(r.output_tokens)}</td><td title="${fmt(r.total_tokens)}">${fmtKo(r.total_tokens)}</td>` +
-      `<td>${fmt(r.turns)}</td><td>${fmtUsd(r.hasCost ? r.cost : null)}</td>`;
-    tbody.appendChild(tr);
-  }
+  const fragment = document.createDocumentFragment();
+  for (const r of pageRows) appendUsageRow(fragment, r);
+  tbody.replaceChildren(fragment);
 
   renderUsagePagination(totalPages, clampedPage);
 }

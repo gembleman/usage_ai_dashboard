@@ -21,6 +21,7 @@ pub type AggKey = (Source, String, String, String);
 pub struct AggTotals {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
@@ -32,6 +33,7 @@ impl AggTotals {
     pub fn add(&mut self, other: &AggTotals) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_creation_input_tokens += other.cache_creation_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
@@ -69,6 +71,7 @@ pub fn aggregate(records: &[UsageRecord]) -> BTreeMap<AggKey, AggTotals> {
         let entry = map.entry(key).or_default();
         entry.input_tokens += r.input_tokens;
         entry.cached_input_tokens += r.cached_input_tokens;
+        entry.cache_creation_input_tokens += r.cache_creation_input_tokens;
         entry.output_tokens += r.output_tokens;
         entry.reasoning_output_tokens += r.reasoning_output_tokens;
         entry.total_tokens += r.total_tokens;

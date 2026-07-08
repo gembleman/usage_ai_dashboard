@@ -42,7 +42,13 @@ pub struct UsageRecord {
     pub timestamp: DateTime<Utc>,
     pub model: Option<String>,
     pub input_tokens: u64,
+    /// Cache *read* input tokens (billed at ~0.1x the base input rate).
+    /// Named for backwards compatibility with the DB column that once held
+    /// creation+read merged; it now carries the read portion only.
     pub cached_input_tokens: u64,
+    /// Cache *creation* input tokens (billed at ~1.25x the base input rate).
+    /// Always 0 for Codex, which has no cache-creation concept.
+    pub cache_creation_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,

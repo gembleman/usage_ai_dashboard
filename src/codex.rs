@@ -215,6 +215,9 @@ fn parse_file(
                         model: current_model.clone(),
                         input_tokens: non_cached_input,
                         cached_input_tokens: delta.cached_input_tokens,
+                        // Codex has no cache-creation concept; its cache tokens
+                        // are all reads (cached_input_tokens above).
+                        cache_creation_input_tokens: 0,
                         output_tokens: delta.output_tokens,
                         reasoning_output_tokens: delta.reasoning_output_tokens,
                         total_tokens: delta.total_tokens,

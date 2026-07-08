@@ -1,3 +1,17 @@
+import {
+  PALETTE,
+  colorFor,
+  emptyNote,
+  escapeHtml,
+  estimateCostUsd,
+  fmtKo,
+  fmtUsd,
+  hideTooltip,
+  seriesKey,
+  showTooltip,
+  swatch,
+} from './util.js';
+
 // 현재 렌더링된 트렌드 차트의 데이터. 포인트 툴팁이 이벤트 위임 핸들러에서
 // 참조한다 (포인트가 수천 개일 수 있어 각 원에 리스너를 붙이지 않는다).
 let trendChartState = null;
@@ -14,8 +28,8 @@ function showTrendPointTooltip(evt, c) {
   showTooltip(evt, `<b>${escapeHtml(k)}</b><br>${escapeHtml(d)}<br>${fmtKo(byDateSeries[d][k])} 토큰`);
 }
 
-// 리스너는 컨테이너에 한 번만 위임한다. 렌더링마다 innerHTML을 갈아끼워도
-// 컨테이너 자체에 붙은 리스너는 유지된다. (스크립트는 defer라 DOM 준비됨)
+// 리스너는 컨테이너에 한 번만 위임한다. 렌더링마다 SVG를 갈아끼워도
+// 컨테이너 자체에 붙은 리스너는 유지된다.
 {
   const container = document.getElementById('trendChart');
   const onPoint = evt => {
@@ -25,26 +39,21 @@ function showTrendPointTooltip(evt, c) {
   const offPoint = evt => {
     if (trendPointFromEvent(evt)) hideTooltip();
   };
-  container.addEventListener('mouseover', onPoint);
-  container.addEventListener('mousemove', onPoint);
-  container.addEventListener('mouseout', offPoint);
+  container.addEventListener('pointerover', onPoint);
+  container.addEventListener('pointermove', onPoint);
+  container.addEventListener('pointerout', offPoint);
   container.addEventListener('focusin', onPoint);
   container.addEventListener('focusout', offPoint);
-  container.addEventListener('touchstart', evt => {
-    const c = trendPointFromEvent(evt);
-    if (c) showTrendPointTooltip(evt.touches[0] || evt, c);
-  }, { passive: true });
-  container.addEventListener('touchend', offPoint);
 }
 
-function renderTrendChart(rows) {
+export function renderTrendChart(rows) {
   const container = document.getElementById('trendChart');
   const legend = document.getElementById('trendLegend');
-  container.innerHTML = '';
-  legend.innerHTML = '';
+  container.replaceChildren();
+  legend.replaceChildren();
   if (rows.length === 0) {
     trendChartState = null;
-    container.innerHTML = '<div class="empty-note">데이터가 없습니다.</div>';
+    container.replaceChildren(emptyNote('데이터가 없습니다.'));
     return;
   }
 
@@ -130,22 +139,24 @@ function renderTrendChart(rows) {
   svg += `</svg>`;
   container.innerHTML = svg;
 
+  const fragment = document.createDocumentFragment();
   keys.forEach(k => {
     const color = colorFor(k, keys);
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.innerHTML = `<span class="swatch" style="background:${color}"></span>${escapeHtml(k)}`;
-    legend.appendChild(item);
+    item.append(swatch(color), document.createTextNode(k));
+    fragment.appendChild(item);
   });
+  legend.replaceChildren(fragment);
 }
 
-function renderModelChart(rows) {
+export function renderModelChart(rows) {
   const container = document.getElementById('modelChart');
   const legend = document.getElementById('modelLegend');
-  container.innerHTML = '';
-  legend.innerHTML = '';
+  container.replaceChildren();
+  legend.replaceChildren();
   if (rows.length === 0) {
-    container.innerHTML = '<div class="empty-note">데이터가 없습니다.</div>';
+    container.replaceChildren(emptyNote('데이터가 없습니다.'));
     return;
   }
 
@@ -153,9 +164,10 @@ function renderModelChart(rows) {
   const byModelUsage = {};
   for (const r of rows) {
     byModel[r.model] = (byModel[r.model] || 0) + r.total_tokens;
-    const u = byModelUsage[r.model] || { input: 0, cached: 0, output: 0 };
+    const u = byModelUsage[r.model] || { input: 0, cached: 0, creation: 0, output: 0 };
     u.input += r.input_tokens;
     u.cached += r.cached_input_tokens;
+    u.creation += (r.cache_creation_input_tokens || 0);
     u.output += r.output_tokens;
     byModelUsage[r.model] = u;
   }
@@ -163,7 +175,7 @@ function renderModelChart(rows) {
   const total = rawEntries.reduce((s, [, v]) => s + v, 0) || 1;
   const totalCost = rawEntries.reduce((s, [m]) => {
     const u = byModelUsage[m];
-    const c = estimateCostUsd(m, u.input, u.cached, u.output);
+    const c = estimateCostUsd(m, u.input, u.cached, u.creation, u.output);
     return s + (c || 0);
   }, 0);
 
@@ -173,15 +185,16 @@ function renderModelChart(rows) {
   let otherVal = 0;
   // "기타"는 여러 실모델의 묶음이라 findPricing('기타')가 실패한다. 개별 모델 비용을
   // 여기서 미리 합산해 두고, 툴팁/범례에서 실시간 estimateCostUsd 대신 이 값을 쓴다.
-  const otherUsage = { input: 0, cached: 0, output: 0, cost: 0, hasCost: false };
+  const otherUsage = { input: 0, cached: 0, creation: 0, output: 0, cost: 0, hasCost: false };
   for (const [model, val] of rawEntries) {
     if (val / total < 0.01) {
       otherVal += val;
       const u = byModelUsage[model];
       otherUsage.input += u.input;
       otherUsage.cached += u.cached;
+      otherUsage.creation += u.creation;
       otherUsage.output += u.output;
-      const c = estimateCostUsd(model, u.input, u.cached, u.output);
+      const c = estimateCostUsd(model, u.input, u.cached, u.creation, u.output);
       if (c != null) { otherUsage.cost += c; otherUsage.hasCost = true; }
     } else {
       main.push([model, val]);
@@ -218,7 +231,7 @@ function renderModelChart(rows) {
   const costForEntry = model => {
     if (model === OTHER_LABEL) return otherUsage.hasCost ? otherUsage.cost : null;
     const u = byModelUsage[model];
-    return estimateCostUsd(model, u.input, u.cached, u.output);
+    return estimateCostUsd(model, u.input, u.cached, u.creation, u.output);
   };
 
   const showSliceTooltip = (evt, s) => {
@@ -230,27 +243,29 @@ function renderModelChart(rows) {
   };
 
   container.querySelectorAll('.slice').forEach(s => {
-    s.addEventListener('mouseenter', evt => showSliceTooltip(evt, s));
-    s.addEventListener('mousemove', evt => showSliceTooltip(evt, s));
-    s.addEventListener('mouseleave', hideTooltip);
+    s.addEventListener('pointerenter', evt => showSliceTooltip(evt, s));
+    s.addEventListener('pointermove', evt => showSliceTooltip(evt, s));
+    s.addEventListener('pointerleave', hideTooltip);
     s.addEventListener('focus', evt => showSliceTooltip(evt, s));
     s.addEventListener('blur', hideTooltip);
-    s.addEventListener('touchstart', evt => { showSliceTooltip(evt.touches[0] || evt, s); }, { passive: true });
-    s.addEventListener('touchend', hideTooltip);
   });
 
   const totalItem = document.createElement('div');
   totalItem.className = 'legend-item legend-total';
-  totalItem.innerHTML = `<b>총 예상 비용: ${fmtUsd(totalCost)}</b>`;
-  legend.appendChild(totalItem);
+  const totalText = document.createElement('b');
+  totalText.textContent = `총 예상 비용: ${fmtUsd(totalCost)}`;
+  totalItem.appendChild(totalText);
 
+  const fragment = document.createDocumentFragment();
+  fragment.appendChild(totalItem);
   entries.forEach(([model, val], i) => {
     const color = PALETTE[i % PALETTE.length];
     const pct = ((val / total) * 100).toFixed(1);
     const cost = costForEntry(model);
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.innerHTML = `<span class="swatch" style="background:${color}"></span>${escapeHtml(model)} (${pct}%) — ${fmtUsd(cost)}`;
-    legend.appendChild(item);
+    item.append(swatch(color), document.createTextNode(`${model} (${pct}%) — ${fmtUsd(cost)}`));
+    fragment.appendChild(item);
   });
+  legend.replaceChildren(fragment);
 }
