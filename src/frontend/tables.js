@@ -37,6 +37,10 @@ function applyGlobalRangeFilter() {
   renderAccountTable(filtered);
   renderTrendChart(filtered);
   renderModelChart(filtered);
+  // 상세 내역 테이블도 전역 기간 필터를 따른다. renderUsageTable은 raw만 교체하고
+  // 기존 source/account 탭 선택은 usageTableState/updateAccountOptions가 보존한다
+  // (기간 변경으로 데이터셋이 바뀌므로 page 리셋은 자연스럽다).
+  renderUsageTable(filtered);
 }
 
 // 상세(usage) 데이터를 (source, account) 기준으로 집계해 계정별 합계 행을 만든다.
@@ -82,16 +86,16 @@ function renderAccountTable(usageRows) {
 const USAGE_PAGE_SIZE = 50;
 let usageTableState = { raw: [], sorted: [], page: 1, source: 'all', account: 'all' };
 
-// (source, date, model) 기준으로 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
+// (source, account, date, model) 기준으로 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
 // 비용은 모델별 단가가 다르므로 모델 단위로 먼저 계산한 뒤 합산한다.
 function aggregateUsageRows(rows) {
   const groups = new Map();
   for (const r of rows) {
-    const key = `${r.source}/${r.date}/${r.model}`;
+    const key = `${r.source}/${r.account}/${r.date}/${r.model}`;
     const cost = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.output_tokens);
     let g = groups.get(key);
     if (!g) {
-      g = { source: r.source, date: r.date, model: r.model, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+      g = { source: r.source, account: r.account, date: r.date, model: r.model, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
       groups.set(key, g);
     }
     g.input_tokens += r.input_tokens;
@@ -101,7 +105,13 @@ function aggregateUsageRows(rows) {
     g.turns += r.turns;
     if (cost != null) { g.cost += cost; g.hasCost = true; }
   }
-  return [...groups.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  // 날짜 내림차순을 우선하되, 같은 날짜 내에서는 source/account/model 순으로 안정 정렬한다.
+  return [...groups.values()].sort((a, b) =>
+    (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) ||
+    a.source.localeCompare(b.source) ||
+    a.account.localeCompare(b.account) ||
+    a.model.localeCompare(b.model)
+  );
 }
 
 // 선택된 소스(source)에 해당하는 계정만 옵션으로 보여준다. 현재 선택된 계정이
@@ -181,11 +191,10 @@ function renderUsageTablePage() {
 
   const start = (clampedPage - 1) * USAGE_PAGE_SIZE;
   const pageRows = sorted.slice(start, start + USAGE_PAGE_SIZE);
-  const accountLabel = usageTableState.account === 'all' ? '전체' : usageTableState.account;
 
   for (const r of pageRows) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td><td>${escapeHtml(accountLabel)}</td><td>${escapeHtml(r.date)}</td><td>${escapeHtml(r.model)}</td>` +
+    tr.innerHTML = `<td>${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td><td>${escapeHtml(r.account)}</td><td>${escapeHtml(r.date)}</td><td>${escapeHtml(r.model)}</td>` +
       `<td title="${fmt(r.input_tokens)}">${fmtKo(r.input_tokens)}</td><td title="${fmt(r.cached_input_tokens)}">${fmtKo(r.cached_input_tokens)}</td>` +
       `<td title="${fmt(r.output_tokens)}">${fmtKo(r.output_tokens)}</td><td title="${fmt(r.total_tokens)}">${fmtKo(r.total_tokens)}</td>` +
       `<td>${fmt(r.turns)}</td><td>${fmtUsd(r.hasCost ? r.cost : null)}</td>`;

@@ -171,7 +171,9 @@ function renderModelChart(rows) {
   const OTHER_LABEL = '기타';
   const main = [];
   let otherVal = 0;
-  const otherUsage = { input: 0, cached: 0, output: 0 };
+  // "기타"는 여러 실모델의 묶음이라 findPricing('기타')가 실패한다. 개별 모델 비용을
+  // 여기서 미리 합산해 두고, 툴팁/범례에서 실시간 estimateCostUsd 대신 이 값을 쓴다.
+  const otherUsage = { input: 0, cached: 0, output: 0, cost: 0, hasCost: false };
   for (const [model, val] of rawEntries) {
     if (val / total < 0.01) {
       otherVal += val;
@@ -179,6 +181,8 @@ function renderModelChart(rows) {
       otherUsage.input += u.input;
       otherUsage.cached += u.cached;
       otherUsage.output += u.output;
+      const c = estimateCostUsd(model, u.input, u.cached, u.output);
+      if (c != null) { otherUsage.cost += c; otherUsage.hasCost = true; }
     } else {
       main.push([model, val]);
     }
@@ -209,12 +213,19 @@ function renderModelChart(rows) {
   svg += `</svg>`;
   container.innerHTML = svg;
 
+  // "기타"는 findPricing 매칭이 안 되므로 위에서 미리 합산한 비용(otherUsage)을 쓰고,
+  // 실모델은 그대로 실시간 계산한다. 비용이 하나도 없으면 null → fmtUsd가 '—'로 표시한다.
+  const costForEntry = model => {
+    if (model === OTHER_LABEL) return otherUsage.hasCost ? otherUsage.cost : null;
+    const u = byModelUsage[model];
+    return estimateCostUsd(model, u.input, u.cached, u.output);
+  };
+
   const showSliceTooltip = (evt, s) => {
     const i = Number(s.getAttribute('data-entry-idx'));
     const [model, val] = entries[i];
     const pct = ((val / total) * 100).toFixed(1);
-    const u = byModelUsage[model];
-    const cost = estimateCostUsd(model, u.input, u.cached, u.output);
+    const cost = costForEntry(model);
     showTooltip(evt, `<b>${escapeHtml(model)}</b><br>${fmtKo(val)} 토큰 (${pct}%)<br>예상 비용: ${fmtUsd(cost)}`);
   };
 
@@ -236,8 +247,7 @@ function renderModelChart(rows) {
   entries.forEach(([model, val], i) => {
     const color = PALETTE[i % PALETTE.length];
     const pct = ((val / total) * 100).toFixed(1);
-    const u = byModelUsage[model];
-    const cost = estimateCostUsd(model, u.input, u.cached, u.output);
+    const cost = costForEntry(model);
     const item = document.createElement('div');
     item.className = 'legend-item';
     item.innerHTML = `<span class="swatch" style="background:${color}"></span>${escapeHtml(model)} (${pct}%) — ${fmtUsd(cost)}`;

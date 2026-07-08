@@ -34,8 +34,9 @@ async function loadAll() {
 
   if (usageResult.status === 'fulfilled') {
     const usage = usageResult.value;
+    // renderGlobalFilteredPanels가 전역 기간 필터 파이프라인을 통해 상세 내역 테이블까지
+    // 함께 그리므로 renderUsageTable을 따로 호출하지 않는다(중복/덮어쓰기 방지).
     renderGlobalFilteredPanels(usage);
-    renderUsageTable(usage);
   } else {
     showUsagePanelErrors('사용량 데이터를 불러오지 못했습니다: ' + usageResult.reason.message);
   }
