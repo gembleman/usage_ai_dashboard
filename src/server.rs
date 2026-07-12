@@ -17,7 +17,7 @@ use serde::Serialize;
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::model::{Source, UsageRecord};
-use crate::{aggregate, parse_all, AggTotals};
+use crate::{AggKey, AggTotals, aggregate, parse_all};
 
 const DASHBOARD_HTML: &str = include_str!("frontend/dashboard.html");
 const DASHBOARD_CSS: &str = include_str!("frontend/styles.css");
@@ -26,8 +26,6 @@ const JS_TABLES: &str = include_str!("frontend/tables.js");
 const JS_CHARTS: &str = include_str!("frontend/charts.js");
 const JS_RATE_LIMITS: &str = include_str!("frontend/rate-limits.js");
 const JS_MAIN: &str = include_str!("frontend/main.js");
-const DEFAULT_PORT: u16 = 3000;
-
 const CSS_CONTENT_TYPE: &str = "text/css; charset=utf-8";
 const JS_CONTENT_TYPE: &str = "text/javascript; charset=utf-8";
 
@@ -44,6 +42,9 @@ struct AppData {
     usage_json: Bytes,
     /// Pre-serialized /api/rate_limits body, same lifecycle as `usage_json`.
     rate_limits_json: Bytes,
+    /// Model prices loaded from config.toml.
+    pricing_json: Bytes,
+    settings_json: Bytes,
     config: Config,
     include_dormant_claude: bool,
 }
@@ -95,6 +96,10 @@ fn to_json_bytes<T: Serialize>(value: &T) -> Bytes {
 /// Build the /api/usage body: full source x account x date x model aggregation.
 fn build_usage_json(records: &[UsageRecord]) -> Bytes {
     let agg = aggregate(records);
+    build_aggregate_json(&agg)
+}
+
+fn build_aggregate_json(agg: &std::collections::BTreeMap<AggKey, AggTotals>) -> Bytes {
     let rows: Vec<AggRow> = agg
         .iter()
         .map(|((source, account, date, model), totals)| {
@@ -110,14 +115,43 @@ const JSON_CONTENT_TYPE: &str = "application/json";
 /// precomputed at startup / refresh.
 async fn get_usage(State(state): State<SharedState>) -> impl IntoResponse {
     let body = state.read().unwrap().usage_json.clone();
-    ([(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)], body)
+    (
+        [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
+        body,
+    )
 }
 
 /// GET /api/rate_limits - latest rate limit snapshot per (source, account).
 /// Codex snapshots come from session logs; claude_code from the OAuth usage API.
 async fn get_rate_limits(State(state): State<SharedState>) -> impl IntoResponse {
     let body = state.read().unwrap().rate_limits_json.clone();
-    ([(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)], body)
+    (
+        [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
+        body,
+    )
+}
+
+/// GET /api/pricing - model prices from config.toml.
+async fn get_pricing(State(state): State<SharedState>) -> impl IntoResponse {
+    let body = state.read().unwrap().pricing_json.clone();
+    (
+        [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
+        body,
+    )
+}
+
+#[derive(Serialize)]
+struct BrowserSettings<'a> {
+    dashboard: &'a crate::config::DashboardConfig,
+    timeouts: &'a crate::config::TimeoutConfig,
+}
+
+async fn get_settings(State(state): State<SharedState>) -> impl IntoResponse {
+    let body = state.read().unwrap().settings_json.clone();
+    (
+        [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
+        body,
+    )
 }
 
 #[derive(Serialize)]
@@ -138,13 +172,19 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
 
     // parse_all is synchronous and I/O-heavy; run it (and the JSON
     // re-serialization) off the async runtime.
-    let config_dir = config.config_dir().map(|p| p.to_path_buf());
+    let cache_path = config.cache_path().to_path_buf();
     let (usage_json, rate_limits_json, record_count, rate_limit_count) =
         tokio::task::spawn_blocking(move || {
             let (records, rate_limits, _summary) = parse_all(&config, include_dormant_claude);
-            let merged = match Cache::open(config_dir.as_deref()) {
-                Ok(mut cache) => match cache.save(&records, &rate_limits) {
-                    Ok(()) => cache.load().ok().flatten(),
+            let mut records = Some(records);
+            let merged = match Cache::open(&cache_path) {
+                Ok(mut cache) => match cache.save(records.as_deref().unwrap(), &rate_limits) {
+                    Ok(()) => {
+                        // The cache owns the durable copy now; release the raw
+                        // transcript rows before SQLite performs aggregation.
+                        drop(records.take());
+                        cache.load_aggregate().ok().flatten()
+                    }
                     Err(e) => {
                         eprintln!("Warning: failed to write cache: {e}");
                         None
@@ -156,13 +196,20 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
                 }
             };
             // If the cache is unavailable, fall back to just the fresh parse.
-            let (records, rate_limits) = merged.unwrap_or((records, rate_limits));
-            (
-                build_usage_json(&records),
-                to_json_bytes(&rate_limits),
-                records.len(),
-                rate_limits.len(),
-            )
+            match merged {
+                Some((agg, rate_limits, record_count)) => (
+                    build_aggregate_json(&agg),
+                    to_json_bytes(&rate_limits),
+                    record_count,
+                    rate_limits.len(),
+                ),
+                None => (
+                    build_usage_json(records.as_deref().unwrap()),
+                    to_json_bytes(&rate_limits),
+                    records.as_ref().unwrap().len(),
+                    rate_limits.len(),
+                ),
+            }
         })
         .await
         .expect("parse task panicked");
@@ -185,39 +232,47 @@ async fn get_index() -> impl IntoResponse {
     Html(DASHBOARD_HTML)
 }
 
-/// Build the axum router and block on serving it via a multi-thread tokio
-/// runtime (so blocking parse work can run on the blocking pool).
+/// Build the axum router and block on a single-thread Tokio runtime. The
+/// dashboard has tiny request handlers; extra permanent worker threads only
+/// add stack/runtime memory. Refresh parsing still uses the blocking pool.
 pub fn run(config: Config, include_dormant_claude: bool) {
-    let config_dir = config.config_dir().map(|p| p.to_path_buf());
-    let cached = Cache::open(config_dir.as_deref())
+    let cache_path = config.cache_path().to_path_buf();
+    let cached = Cache::open(&cache_path)
         .ok()
-        .and_then(|c| c.load().ok().flatten());
+        .and_then(|c| c.load_aggregate().ok().flatten());
 
-    let (records, rate_limits) = match cached {
-        Some((records, rate_limits)) => {
+    let (usage_json, rate_limits) = match cached {
+        Some((agg, rate_limits, record_count)) => {
             println!(
-                "Loaded {} cached records from cache.sqlite3 (click 데이터 새로고침 to re-parse).",
-                records.len()
+                "Loaded {} cached records from {} (click 데이터 새로고침 to re-parse).",
+                record_count,
+                cache_path.display()
             );
-            (records, rate_limits)
+            (build_aggregate_json(&agg), rate_limits)
         }
         None => {
             println!("No cache found; parsing accounts before starting server...");
             let (records, rate_limits, summary) = parse_all(&config, include_dormant_claude);
             crate::print_parse_summary(&summary);
-            if let Ok(mut cache) = Cache::open(config_dir.as_deref()) {
+            if let Ok(mut cache) = Cache::open(&cache_path) {
                 if let Err(e) = cache.save(&records, &rate_limits) {
                     eprintln!("Warning: failed to write cache: {e}");
                 }
             }
-            (records, rate_limits)
+            (build_usage_json(&records), rate_limits)
         }
     };
 
-    let config_port = config.port();
+    let server_config = config.server().clone();
+    let settings_json = to_json_bytes(&BrowserSettings {
+        dashboard: config.dashboard(),
+        timeouts: config.timeouts(),
+    });
     let state: SharedState = Arc::new(RwLock::new(AppData {
-        usage_json: build_usage_json(&records),
+        usage_json,
         rate_limits_json: to_json_bytes(&rate_limits),
+        pricing_json: to_json_bytes(config.model_pricing()),
+        settings_json,
         config,
         include_dormant_claude,
     }));
@@ -250,28 +305,28 @@ pub fn run(config: Config, include_dormant_claude: bool) {
         )
         .route("/api/usage", get(get_usage))
         .route("/api/rate_limits", get(get_rate_limits))
+        .route("/api/pricing", get(get_pricing))
+        .route("/api/settings", get(get_settings))
         .route("/api/refresh", post(post_refresh))
         .with_state(state);
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
 
-    // PORT env var overrides config.toml `port`, which overrides the default.
+    // PORT env var overrides config.toml server.port.
     rt.block_on(async move {
         let port = std::env::var("PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
-            .or(config_port)
-            .unwrap_or(DEFAULT_PORT);
-        let addr = format!("127.0.0.1:{port}");
+            .unwrap_or(server_config.port);
+        let addr = format!("{}:{port}", server_config.host);
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
         println!("Dashboard listening on http://{addr}");
-        axum::serve(listener, app)
-            .await
-            .expect("server error");
+        axum::serve(listener, app).await.expect("server error");
     });
 }

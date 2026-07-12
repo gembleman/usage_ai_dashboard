@@ -8,18 +8,17 @@
 //! `save()` merges each parse into the cache rather than replacing it —
 //! the cache keeps history the logs no longer cover.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::str::FromStr;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::model::{
     ExtraUsageSnapshot, RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord,
 };
-
-const DB_FILE_NAME: &str = "cache.sqlite3";
+use crate::{AggKey, AggTotals};
 
 /// Cache schema version, tracked via `PRAGMA user_version`.
 /// v1: codex rows store `input_tokens` excluding `cached_input_tokens`
@@ -155,13 +154,8 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Open (creating if needed) the cache DB next to the given config path's
-    /// directory, or the current directory if `config_dir` is `None`.
-    pub fn open(config_dir: Option<&Path>) -> rusqlite::Result<Cache> {
-        let path: PathBuf = match config_dir {
-            Some(dir) => dir.join(DB_FILE_NAME),
-            None => PathBuf::from(DB_FILE_NAME),
-        };
+    /// Open (creating if needed) the configured cache database.
+    pub fn open(path: &Path) -> rusqlite::Result<Cache> {
         Cache::init(Connection::open(path)?)
     }
 
@@ -172,9 +166,111 @@ impl Cache {
         // of pragma_update.
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // This database is a sequentially-read, rebuildable cache. SQLite's
+        // default page cache alone can consume about 2 MiB per connection;
+        // keep it deliberately small for the long-lived dashboard process.
+        conn.pragma_update(None, "cache_size", -256)?;
+        conn.pragma_update(None, "mmap_size", 0)?;
         conn.execute_batch(SCHEMA_SQL)?;
         migrate(&conn)?;
         Ok(Cache { conn })
+    }
+
+    /// Load only the grouped data needed by the dashboard. Unlike `load`,
+    /// this never materializes every transcript row in Rust memory.
+    pub fn load_aggregate(
+        &self,
+    ) -> rusqlite::Result<Option<(BTreeMap<AggKey, AggTotals>, Vec<RateLimitSnapshot>, usize)>>
+    {
+        let record_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))?;
+        if record_count == 0 {
+            return Ok(None);
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT source, account, substr(timestamp, 1, 10), COALESCE(model, 'unknown'),
+                    SUM(input_tokens), SUM(cached_input_tokens),
+                    SUM(cache_creation_input_tokens), SUM(output_tokens),
+                    SUM(reasoning_output_tokens), SUM(total_tokens), COUNT(*)
+             FROM usage_records
+             GROUP BY source, account, substr(timestamp, 1, 10), COALESCE(model, 'unknown')",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let source: String = row.get(0)?;
+            let key = (
+                Source::from_str(&source).unwrap_or(Source::Codex),
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            );
+            let totals = AggTotals {
+                input_tokens: row.get::<_, i64>(4)? as u64,
+                cached_input_tokens: row.get::<_, i64>(5)? as u64,
+                cache_creation_input_tokens: row.get::<_, i64>(6)? as u64,
+                output_tokens: row.get::<_, i64>(7)? as u64,
+                reasoning_output_tokens: row.get::<_, i64>(8)? as u64,
+                total_tokens: row.get::<_, i64>(9)? as u64,
+                count: row.get::<_, i64>(10)? as u64,
+            };
+            Ok((key, totals))
+        })?;
+        let aggregate = rows.collect::<Result<BTreeMap<_, _>, _>>()?;
+        drop(stmt);
+
+        Ok(Some((
+            aggregate,
+            self.load_rate_limits()?,
+            record_count as usize,
+        )))
+    }
+
+    fn load_rate_limits(&self) -> rusqlite::Result<Vec<RateLimitSnapshot>> {
+        let mut rl_stmt = self.conn.prepare(
+            "SELECT source, account, observed_at, limit_id, plan_type, rate_limit_reached_type,
+                    primary_used_percent, primary_window_minutes, primary_resets_at,
+                    secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                    opus_used_percent, opus_window_minutes, opus_resets_at,
+                    sonnet_used_percent, sonnet_window_minutes, sonnet_resets_at,
+                    extra_usage_enabled, extra_usage_monthly_limit,
+                    extra_usage_used_credits, extra_usage_utilization
+             FROM rate_limits",
+        )?;
+        let window = |used: Option<f64>, minutes: Option<i64>, resets: Option<i64>| {
+            used.map(|used_percent| RateLimitWindowSnapshot {
+                used_percent,
+                window_minutes: minutes.unwrap_or(0) as u64,
+                resets_at: resets.unwrap_or(0),
+            })
+        };
+        rl_stmt
+            .query_map([], |row| {
+                let source: String = row.get(0)?;
+                let observed_at: String = row.get(2)?;
+                let extra_enabled: Option<i64> = row.get(18)?;
+                Ok(RateLimitSnapshot {
+                    source: Source::from_str(&source).unwrap_or(Source::Codex),
+                    account: row.get(1)?,
+                    observed_at: parse_rfc3339(&observed_at),
+                    limit_id: row.get(3)?,
+                    plan_type: row.get(4)?,
+                    rate_limit_reached_type: row.get(5)?,
+                    primary: window(row.get(6)?, row.get(7)?, row.get(8)?),
+                    secondary: window(row.get(9)?, row.get(10)?, row.get(11)?),
+                    seven_day_opus: window(row.get(12)?, row.get(13)?, row.get(14)?),
+                    seven_day_sonnet: window(row.get(15)?, row.get(16)?, row.get(17)?),
+                    extra_usage: match extra_enabled {
+                        Some(v) if v != 0 => Some(ExtraUsageSnapshot {
+                            monthly_limit: row.get(19)?,
+                            used_credits: row.get(20)?,
+                            utilization: row.get(21)?,
+                        }),
+                        _ => None,
+                    },
+                })
+            })?
+            .collect()
     }
 
     /// Merge a parse result into the cache.

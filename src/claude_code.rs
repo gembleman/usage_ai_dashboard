@@ -27,6 +27,7 @@ use crate::model::{
 pub struct ClaudeAccount {
     pub name: String,
     pub config_dir: PathBuf,
+    pub include_subagents: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -100,9 +101,7 @@ pub fn parse_account(account: &ClaudeAccount, include_subagents: bool) -> Claude
             continue;
         }
 
-        let is_subagent_file = path
-            .components()
-            .any(|c| c.as_os_str() == "subagents");
+        let is_subagent_file = path.components().any(|c| c.as_os_str() == "subagents");
         if is_subagent_file && !include_subagents {
             continue;
         }
@@ -113,12 +112,7 @@ pub fn parse_account(account: &ClaudeAccount, include_subagents: bool) -> Claude
     ClaudeParseResult { records }
 }
 
-fn parse_file(
-    path: &Path,
-    account: &str,
-    is_subagent_file: bool,
-    records: &mut Vec<UsageRecord>,
-) {
+fn parse_file(path: &Path, account: &str, is_subagent_file: bool, records: &mut Vec<UsageRecord>) {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
@@ -370,12 +364,15 @@ fn to_window_snapshot(w: &UsageWindow, window_minutes: u64) -> Option<RateLimitW
 /// OAuth usage API. Returns `None` on any failure (missing/expired token,
 /// network error, non-2xx status, unparseable body) — callers treat that as
 /// "no snapshot" rather than an error.
-pub fn fetch_rate_limit_snapshot(account: &ClaudeAccount) -> Option<RateLimitSnapshot> {
+pub fn fetch_rate_limit_snapshot(
+    account: &ClaudeAccount,
+    timeout_seconds: u64,
+) -> Option<RateLimitSnapshot> {
     let oauth = read_oauth_credentials(account)?;
     let token = oauth.access_token.as_deref()?;
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(timeout_seconds))
         .build()
         .ok()?;
 

@@ -7,7 +7,7 @@ import {
   fmtUsd,
   updateWithViewTransition,
 } from './util.js';
-import { renderModelChart, renderTrendChart } from './charts.js';
+import { renderModelChart, renderTrendChart, setModelChartMaxItems } from './charts.js';
 
 const ACCOUNT_RANGE_DAYS = { '1d': 1, '7d': 7, '30d': 30, '365d': 365, all: null };
 
@@ -127,7 +127,12 @@ function renderAccountTable(usageRows) {
   tbody.replaceChildren(fragment);
 }
 
-const USAGE_PAGE_SIZE = 50;
+let usagePageSize = 50;
+
+export function applyDashboardSettings(settings) {
+  if (Number.isInteger(settings?.page_size) && settings.page_size > 0) usagePageSize = settings.page_size;
+  setModelChartMaxItems(settings?.model_chart_max_items);
+}
 let usageTableState = { raw: [], sorted: [], page: 1, source: 'all', account: 'all' };
 
 // (source, account, date, model) 기준으로 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
@@ -230,12 +235,12 @@ function renderUsageTablePage() {
     return;
   }
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / USAGE_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(sorted.length / usagePageSize));
   const clampedPage = Math.min(Math.max(1, page), totalPages);
   usageTableState.page = clampedPage;
 
-  const start = (clampedPage - 1) * USAGE_PAGE_SIZE;
-  const pageRows = sorted.slice(start, start + USAGE_PAGE_SIZE);
+  const start = (clampedPage - 1) * usagePageSize;
+  const pageRows = sorted.slice(start, start + usagePageSize);
 
   const fragment = document.createDocumentFragment();
   for (const r of pageRows) appendUsageRow(fragment, r);

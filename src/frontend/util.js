@@ -55,27 +55,26 @@ export function fmtDurationKo(sec) {
   return KO_DURATION_FORMAT.format({ seconds: s });
 }
 
-// 모델별 100만 토큰당 가격 (USD). 알려지지 않은 모델은 undefined 반환.
-const MODEL_PRICING = {
-  // Anthropic Claude
-  'claude-opus-4-8': { input: 5, output: 25 },
-  'claude-opus-4-7': { input: 5, output: 25 },
-  'claude-sonnet-5': { input: 3, output: 15 },
-  'claude-sonnet-4-6': { input: 3, output: 15 },
-  'claude-fable-5': { input: 10, output: 50 },
-  'claude-haiku-4-5': { input: 1, output: 5 },
-  // OpenAI Codex / GPT
-  'gpt-5.5': { input: 5, output: 30 },
-  'gpt-5.4': { input: 2.5, output: 15 },
-  'gpt-5.4-mini': { input: 0.75, output: 4.5 },
-  'gpt-5.4-nano': { input: 0.2, output: 1.25 },
-  'gpt-4.1': { input: 2, output: 8 },
-};
+// 모델별 100만 토큰당 가격(USD)은 config.toml에서 로드한다.
+// 설정되지 않은 모델은 비용을 계산하지 않는다.
+const MODEL_PRICING = {};
+
+// config.toml에서 전달된 가격표를 적용한다.
+export function applyModelPricing(prices) {
+  for (const [model, pricing] of Object.entries(prices || {})) {
+    if (pricing && Number.isFinite(pricing.input) && Number.isFinite(pricing.output)) {
+      MODEL_PRICING[model] = { input: pricing.input, output: pricing.output };
+    }
+  }
+}
 
 function findPricing(model) {
   if (!model) return undefined;
   if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-  const key = Object.keys(MODEL_PRICING).find(k => model.includes(k));
+  // gpt-5.4보다 gpt-5.4-mini처럼 더 구체적인 ID를 먼저 매칭한다.
+  const key = Object.keys(MODEL_PRICING)
+    .filter(k => model.includes(k))
+    .sort((a, b) => b.length - a.length)[0];
   return key ? MODEL_PRICING[key] : undefined;
 }
 
@@ -85,8 +84,8 @@ export function estimateCostUsd(model, inputTokens, cachedInputTokens, cacheCrea
   const p = findPricing(model);
   if (!p) return null;
   const inCost = (inputTokens / 1e6) * p.input;
-  const cachedReadCost = (cachedInputTokens / 1e6) * p.input * 0.1;
-  const cachedCreationCost = ((cacheCreationInputTokens || 0) / 1e6) * p.input * 1.25;
+  const cachedReadCost = (cachedInputTokens / 1e6) * p.cached_input;
+  const cachedCreationCost = ((cacheCreationInputTokens || 0) / 1e6) * p.cache_creation_input;
   const outCost = (outputTokens / 1e6) * p.output;
   return inCost + cachedReadCost + cachedCreationCost + outCost;
 }
@@ -184,8 +183,13 @@ export function swatch(color) {
   return span;
 }
 
+let defaultApiTimeoutMs = 30000;
+export function setDefaultApiTimeout(seconds) {
+  if (Number.isFinite(seconds) && seconds > 0) defaultApiTimeoutMs = seconds * 1000;
+}
+
 export async function fetchJson(url, opts = {}) {
-  const timeoutMs = opts.timeoutMs ?? 30000;
+  const timeoutMs = opts.timeoutMs ?? defaultApiTimeoutMs;
   const { timeoutMs: _, ...fetchOpts } = opts;
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = fetchOpts.signal

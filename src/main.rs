@@ -230,7 +230,7 @@ pub fn parse_all(
 
     // Accounts are independent of each other, so parse each on its own
     // thread. This matters most for Claude Code, where the rate-limit fetch
-    // is a blocking HTTP call (8s timeout) that would otherwise serialize
+    // is a blocking HTTP call that would otherwise serialize
     // per account. Joining in spawn order keeps the summary deterministic.
     let (codex_results, claude_results) = std::thread::scope(|s| {
         let codex_handles: Vec<_> = codex_accounts
@@ -241,11 +241,14 @@ pub fn parse_all(
             .iter()
             .map(|account| {
                 s.spawn(move || {
-                    let result = claude_code::parse_account(account, true);
+                    let result = claude_code::parse_account(account, account.include_subagents);
                     // Rate limits for Claude Code come from the Anthropic OAuth
                     // usage API (not the local transcripts). Any failure yields
                     // None and is skipped.
-                    let snapshot = claude_code::fetch_rate_limit_snapshot(account);
+                    let snapshot = claude_code::fetch_rate_limit_snapshot(
+                        account,
+                        config.timeouts().anthropic_seconds,
+                    );
                     (result, snapshot)
                 })
             })

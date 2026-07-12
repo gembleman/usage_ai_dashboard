@@ -16,6 +16,11 @@ import {
 // 참조한다 (포인트가 수천 개일 수 있어 각 원에 리스너를 붙이지 않는다).
 let trendChartState = null;
 let modelChartState = null;
+let modelChartMaxItems = 8;
+
+export function setModelChartMaxItems(value) {
+  if (Number.isInteger(value) && value >= 2) modelChartMaxItems = value;
+}
 
 function trendPointFromEvent(evt) {
   if (!trendChartState || !evt.target || !evt.target.closest) return null;
@@ -212,15 +217,16 @@ export function renderModelChart(rows) {
     return s + (c || 0);
   }, 0);
 
-  // 1% 미만 조각은 식별이 어려우므로 "기타"로 묶는다.
+  // 설정된 최대 항목 수를 넘는 모델은 마지막 "기타" 항목으로 묶는다.
   const OTHER_LABEL = '기타';
   const main = [];
   let otherVal = 0;
   // "기타"는 여러 실모델의 묶음이라 findPricing('기타')가 실패한다. 개별 모델 비용을
   // 여기서 미리 합산해 두고, 툴팁/범례에서 실시간 estimateCostUsd 대신 이 값을 쓴다.
   const otherUsage = { input: 0, cached: 0, creation: 0, output: 0, cost: 0, hasCost: false };
-  for (const [model, val] of rawEntries) {
-    if (val / total < 0.01) {
+  const keepCount = rawEntries.length > modelChartMaxItems ? modelChartMaxItems - 1 : rawEntries.length;
+  for (const [index, [model, val]] of rawEntries.entries()) {
+    if (index >= keepCount) {
       otherVal += val;
       const u = byModelUsage.get(model);
       otherUsage.input += u.input;

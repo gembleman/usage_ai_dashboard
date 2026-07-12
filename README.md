@@ -8,7 +8,38 @@ config.toml 만들기.
 
 ```toml
 #예시)
+[server]
+host = "127.0.0.1"
 port = 4675
+
+[dashboard]
+page_size = 50
+model_chart_max_items = 8
+auto_refresh_seconds = 0 # 0이면 비활성화
+
+[cache]
+path = "cache.sqlite3" # 상대 경로는 config.toml 기준
+
+[timeouts]
+api_seconds = 30
+refresh_seconds = 120
+anthropic_seconds = 8
+
+# 모델별 100만 토큰당 USD 가격
+[model_pricing]
+"claude-opus-4-8" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
+"claude-opus-4-7" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
+"claude-sonnet-5" = { input = 3.0, cached_input = 0.3, cache_creation_input = 3.75, output = 15.0 }
+"claude-sonnet-4-6" = { input = 3.0, cached_input = 0.3, cache_creation_input = 3.75, output = 15.0 }
+"claude-fable-5" = { input = 10.0, cached_input = 1.0, cache_creation_input = 12.5, output = 50.0 }
+"claude-haiku-4-5" = { input = 1.0, cached_input = 0.1, cache_creation_input = 1.25, output = 5.0 }
+"gpt-5.6-sol" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 30.0 }
+"gpt-5.6-terra" = { input = 2.5, cached_input = 0.25, cache_creation_input = 3.125, output = 15.0 }
+"gpt-5.5" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 30.0 }
+"gpt-5.4" = { input = 2.5, cached_input = 0.25, cache_creation_input = 3.125, output = 15.0 }
+"gpt-5.4-mini" = { input = 0.75, cached_input = 0.075, cache_creation_input = 0.9375, output = 4.5 }
+"gpt-5.4-nano" = { input = 0.2, cached_input = 0.02, cache_creation_input = 0.25, output = 1.25 }
+"gpt-4.1" = { input = 2.0, cached_input = 0.2, cache_creation_input = 2.5, output = 8.0 }
 
 [[codex_accounts]]
 name = "user1"
@@ -17,6 +48,7 @@ codex_home = "~/.codex"
 [[claude_accounts]]
 name = "user2"
 config_dir = "~/.claude"
+include_subagents = true
 ```
 
 ```
