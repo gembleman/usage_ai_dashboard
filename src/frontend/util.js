@@ -62,8 +62,18 @@ const MODEL_PRICING = {};
 // config.toml에서 전달된 가격표를 적용한다.
 export function applyModelPricing(prices) {
   for (const [model, pricing] of Object.entries(prices || {})) {
-    if (pricing && Number.isFinite(pricing.input) && Number.isFinite(pricing.output)) {
-      MODEL_PRICING[model] = { input: pricing.input, output: pricing.output };
+    if (pricing && [
+      pricing.input,
+      pricing.cached_input,
+      pricing.cache_creation_input,
+      pricing.output,
+    ].every(Number.isFinite)) {
+      MODEL_PRICING[model] = {
+        input: pricing.input,
+        cached_input: pricing.cached_input,
+        cache_creation_input: pricing.cache_creation_input,
+        output: pricing.output,
+      };
     }
   }
 }
@@ -90,7 +100,7 @@ export function estimateCostUsd(model, inputTokens, cachedInputTokens, cacheCrea
   return inCost + cachedReadCost + cachedCreationCost + outCost;
 }
 
-export const fmtUsd = v => v == null ? '—' : USD_FORMAT.format(v);
+export const fmtUsd = v => !Number.isFinite(v) ? '—' : USD_FORMAT.format(v);
 const tooltip = document.getElementById('tooltip');
 
 export function showTooltip(evt, html) {

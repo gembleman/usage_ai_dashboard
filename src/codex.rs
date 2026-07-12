@@ -6,7 +6,7 @@
 //! - The current model comes from the most recent `turn_context` event.
 //! - `info: null` token_count events are skipped.
 //! - Token usage comes exclusively from the local session logs.
-//! - Rate limits are fetched separately through `codex app-server`.
+//! - Rate limits from session logs are retained and merged with app-server data.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -51,12 +51,30 @@ struct TokenCountInfo {
     total_token_usage: Option<TokenUsage>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct LogRateLimitWindow {
+    #[serde(default)] used_percent: f64,
+    #[serde(default)] window_minutes: u64,
+    #[serde(default)] resets_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct LogRateLimits {
+    #[serde(default)] limit_id: Option<String>,
+    #[serde(default)] plan_type: Option<String>,
+    #[serde(default)] rate_limit_reached_type: Option<String>,
+    #[serde(default)] primary: Option<LogRateLimitWindow>,
+    #[serde(default)] secondary: Option<LogRateLimitWindow>,
+}
+
 #[derive(Debug, Deserialize)]
 struct EventMsgPayload {
     #[serde(rename = "type", default)]
     kind: Option<String>,
     #[serde(default)]
     info: Option<TokenCountInfo>,
+    #[serde(default)]
+    rate_limits: Option<LogRateLimits>,
     /// turn_context payload field
     #[serde(default)]
     model: Option<String>,
@@ -76,14 +94,16 @@ struct RolloutLine {
 #[derive(Debug, Default)]
 pub struct CodexParseResult {
     pub records: Vec<UsageRecord>,
+    pub rate_limit_snapshot: Option<RateLimitSnapshot>,
 }
 
 pub fn parse_account(account: &CodexAccount) -> CodexParseResult {
     let sessions_dir = account.codex_home.join("sessions");
     let mut records = Vec::new();
+    let mut rate_limit_snapshot = None;
 
     if !sessions_dir.is_dir() {
-        return CodexParseResult { records };
+        return CodexParseResult { records, rate_limit_snapshot };
     }
 
     for entry in WalkDir::new(&sessions_dir)
@@ -102,13 +122,13 @@ pub fn parse_account(account: &CodexAccount) -> CodexParseResult {
             continue;
         }
 
-        parse_file(path, &account.name, &mut records);
+        parse_file(path, &account.name, &mut records, &mut rate_limit_snapshot);
     }
 
-    CodexParseResult { records }
+    CodexParseResult { records, rate_limit_snapshot }
 }
 
-fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>) {
+fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest_snapshot: &mut Option<RateLimitSnapshot>) {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
@@ -188,10 +208,58 @@ fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>) {
                         is_subagent: false,
                     });
                 }
+
+                if let Some(rl) = ev.rate_limits {
+                    if (rl.primary.is_some() || rl.secondary.is_some())
+                        && latest_snapshot.as_ref().map(|s| timestamp > s.observed_at).unwrap_or(true)
+                    {
+                        let window = |w: LogRateLimitWindow| RateLimitWindowSnapshot {
+                            used_percent: w.used_percent,
+                            window_minutes: w.window_minutes,
+                            resets_at: w.resets_at,
+                        };
+                        *latest_snapshot = Some(RateLimitSnapshot {
+                            source: Source::Codex,
+                            account: account.to_string(),
+                            observed_at: timestamp,
+                            limit_id: rl.limit_id,
+                            plan_type: rl.plan_type,
+                            rate_limit_reached_type: rl.rate_limit_reached_type,
+                            primary: rl.primary.map(window),
+                            secondary: rl.secondary.map(window),
+                            seven_day_opus: None,
+                            seven_day_sonnet: None,
+                            extra_usage: None,
+                        });
+                    }
+                }
             }
             _ => {} // response_item, session_meta, and anything else is ignored
         }
     }
+}
+
+/// Merge app-server data with the latest session-log snapshot. Some current
+/// app-server versions expose only the weekly window, while logs still carry
+/// both the 5-hour and weekly quotas.
+pub fn merge_rate_limit_snapshots(
+    log: Option<RateLimitSnapshot>,
+    live: Option<RateLimitSnapshot>,
+) -> Option<RateLimitSnapshot> {
+    let mut merged = live.or(log.clone())?;
+    if let Some(log) = log {
+        let mut windows = [merged.primary.take(), merged.secondary.take()]
+            .into_iter().flatten().collect::<Vec<_>>();
+        for w in [log.primary, log.secondary].into_iter().flatten() {
+            if !windows.iter().any(|existing| existing.window_minutes == w.window_minutes) {
+                windows.push(w);
+            }
+        }
+        windows.sort_by_key(|w| w.window_minutes);
+        merged.primary = windows.first().cloned();
+        merged.secondary = windows.get(1).cloned();
+    }
+    Some(merged)
 }
 
 #[derive(Debug, Serialize)]
@@ -388,7 +456,7 @@ mod tests {
         let tmp = write_temp_jsonl(&lines_ref);
 
         let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", &mut records);
+        parse_file(&tmp.path, "user01", &mut records, &mut None);
 
         assert_eq!(records.len(), 2);
         let total_input: u64 = records.iter().map(|r| r.input_tokens).sum();
@@ -410,7 +478,7 @@ mod tests {
         ];
         let tmp = write_temp_jsonl(&lines);
         let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", &mut records);
+        parse_file(&tmp.path, "user01", &mut records, &mut None);
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 16296 - 11648);
@@ -425,7 +493,7 @@ mod tests {
         ];
         let tmp = write_temp_jsonl(&lines);
         let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", &mut records);
+        parse_file(&tmp.path, "user01", &mut records, &mut None);
         assert_eq!(records.len(), 0);
     }
 
@@ -437,7 +505,7 @@ mod tests {
         ];
         let tmp = write_temp_jsonl(&lines);
         let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", &mut records);
+        parse_file(&tmp.path, "user01", &mut records, &mut None);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 5);
     }

@@ -107,8 +107,17 @@ function rateLimitCard(snap) {
   // Claude Code windows come from the OAuth usage API and use different
   // labels than Codex's 5h/7d rate-limit windows.
   const isClaude = snap.source === 'claude_code';
-  const primaryLabel = isClaude ? '세션 / 5시간' : '1차 / 5시간';
-  const secondaryLabel = isClaude ? '주간 / 7일' : '2차 / 7일';
+  // Codex app-server may return the only available window as `primary`
+  // regardless of whether it is the 5-hour or weekly quota. Use the actual
+  // duration so a weekly-only response is not mislabeled as a 5-hour limit.
+  const codexLabel = (window, fallback) => {
+    if (!window) return fallback;
+    if (window.window_minutes >= 7 * 24 * 60) return '주간 / 7일';
+    if (window.window_minutes === 5 * 60) return '세션 / 5시간';
+    return fallback;
+  };
+  const primaryLabel = isClaude ? '세션 / 5시간' : codexLabel(snap.primary, '1차');
+  const secondaryLabel = isClaude ? '주간 / 7일' : codexLabel(snap.secondary, '2차');
 
   const head = div('rl-head');
   const account = span('rl-account');

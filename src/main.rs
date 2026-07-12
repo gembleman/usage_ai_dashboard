@@ -279,7 +279,7 @@ pub fn parse_all(
     for (account, (result, snapshot)) in codex_accounts.iter().zip(codex_results) {
         per_account.push((format!("codex/{}", account.name), result.records.len()));
         all_records.extend(result.records);
-        if let Some(snap) = snapshot {
+        if let Some(snap) = codex::merge_rate_limit_snapshots(result.rate_limit_snapshot, snapshot) {
             rate_limit_snapshots.push(snap);
         }
     }
