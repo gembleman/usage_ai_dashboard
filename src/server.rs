@@ -1,15 +1,16 @@
 //! Local web dashboard for the usage data.
 //!
-//! Parses all accounts once at startup, serves a single embedded HTML page
-//! plus a small JSON API, and exposes POST /api/refresh to re-parse on
+//! Parses all accounts once at startup, serves frontend files from disk plus
+//! a small JSON API, and exposes POST /api/refresh to re-parse on
 //! demand (e.g. after new session logs have been written).
 
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -19,19 +20,36 @@ use crate::config::Config;
 use crate::model::{RateLimitSnapshot, Source, UsageRecord};
 use crate::{AggKey, AggTotals, aggregate, parse_all};
 
-const DASHBOARD_HTML: &str = include_str!("frontend/dashboard.html");
-const DASHBOARD_CSS: &str = include_str!("frontend/styles.css");
-const JS_UTIL: &str = include_str!("frontend/util.js");
-const JS_TABLES: &str = include_str!("frontend/tables.js");
-const JS_CHARTS: &str = include_str!("frontend/charts.js");
-const JS_RATE_LIMITS: &str = include_str!("frontend/rate-limits.js");
-const JS_MAIN: &str = include_str!("frontend/main.js");
 const CSS_CONTENT_TYPE: &str = "text/css; charset=utf-8";
 const JS_CONTENT_TYPE: &str = "text/javascript; charset=utf-8";
 
-/// Serve a static asset with an explicit Content-Type header.
-fn static_asset(content_type: &'static str, body: &'static str) -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, content_type)], body)
+/// Read a frontend file at request time so frontend changes do not require a
+/// Rust rebuild (and the files are not embedded in the executable).
+async fn frontend_asset(
+    state: &SharedState,
+    relative_path: &'static str,
+    content_type: &'static str,
+) -> axum::response::Response {
+    let path = {
+        let data = state.read().unwrap();
+        data.frontend_dir.join(relative_path)
+    };
+
+    match tokio::fs::read(&path).await {
+        Ok(body) => ([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("Frontend asset not found: {}", path.display());
+            (StatusCode::NOT_FOUND, "frontend asset not found").into_response()
+        }
+        Err(error) => {
+            eprintln!("Failed to read frontend asset {}: {error}", path.display());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to read frontend asset",
+            )
+                .into_response()
+        }
+    }
 }
 
 struct AppData {
@@ -47,6 +65,7 @@ struct AppData {
     settings_json: Bytes,
     config: Config,
     include_dormant_claude: bool,
+    frontend_dir: PathBuf,
 }
 
 type SharedState = Arc<RwLock<AppData>>;
@@ -254,8 +273,32 @@ mod tests {
     }
 }
 
-async fn get_index() -> impl IntoResponse {
-    Html(DASHBOARD_HTML)
+async fn get_index(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "dashboard.html", "text/html; charset=utf-8").await
+}
+
+async fn get_styles(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "styles.css", CSS_CONTENT_TYPE).await
+}
+
+async fn get_util_js(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "util.js", JS_CONTENT_TYPE).await
+}
+
+async fn get_tables_js(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "tables.js", JS_CONTENT_TYPE).await
+}
+
+async fn get_charts_js(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "charts.js", JS_CONTENT_TYPE).await
+}
+
+async fn get_rate_limits_js(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "rate-limits.js", JS_CONTENT_TYPE).await
+}
+
+async fn get_main_js(State(state): State<SharedState>) -> impl IntoResponse {
+    frontend_asset(&state, "main.js", JS_CONTENT_TYPE).await
 }
 
 /// Build the axum router and block on a single-thread Tokio runtime. The
@@ -290,6 +333,7 @@ pub fn run(config: Config, include_dormant_claude: bool) {
     };
 
     let server_config = config.server().clone();
+    let frontend_dir = config.frontend_dir().to_path_buf();
     let settings_json = to_json_bytes(&BrowserSettings {
         dashboard: config.dashboard(),
         timeouts: config.timeouts(),
@@ -301,34 +345,17 @@ pub fn run(config: Config, include_dormant_claude: bool) {
         settings_json,
         config,
         include_dormant_claude,
+        frontend_dir,
     }));
 
     let app = Router::new()
         .route("/", get(get_index))
-        .route(
-            "/styles.css",
-            get(move || async move { static_asset(CSS_CONTENT_TYPE, DASHBOARD_CSS) }),
-        )
-        .route(
-            "/js/util.js",
-            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_UTIL) }),
-        )
-        .route(
-            "/js/tables.js",
-            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_TABLES) }),
-        )
-        .route(
-            "/js/charts.js",
-            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_CHARTS) }),
-        )
-        .route(
-            "/js/rate-limits.js",
-            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_RATE_LIMITS) }),
-        )
-        .route(
-            "/js/main.js",
-            get(move || async move { static_asset(JS_CONTENT_TYPE, JS_MAIN) }),
-        )
+        .route("/styles.css", get(get_styles))
+        .route("/js/util.js", get(get_util_js))
+        .route("/js/tables.js", get(get_tables_js))
+        .route("/js/charts.js", get(get_charts_js))
+        .route("/js/rate-limits.js", get(get_rate_limits_js))
+        .route("/js/main.js", get(get_main_js))
         .route("/api/usage", get(get_usage))
         .route("/api/rate_limits", get(get_rate_limits))
         .route("/api/pricing", get(get_pricing))

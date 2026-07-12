@@ -21,7 +21,7 @@ axum = { version = "0.8", default-features = false, features = [
     "json",
     "tokio",
 ] }
-tokio = { version = "1", features = ["rt", "net"] }
+tokio = { version = "1", features = ["rt", "net", "fs"] }
 rusqlite = { version = "0.40.1", default-features = false, features = [
     "bundled",
 ] }

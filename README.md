@@ -11,6 +11,7 @@ config.toml 만들기.
 [server]
 host = "127.0.0.1"
 port = 4675
+frontend_dir = "src/frontend" # config.toml 기준, 바이너리에 포함되지 않음
 
 [dashboard]
 page_size = 50
@@ -54,6 +55,10 @@ include_subagents = true
 ```
 ./usage_ai_dashboard.exe serve
 ```
+
+프론트엔드 파일은 `server.frontend_dir`에서 실행 중에 읽습니다. 따라서 HTML,
+CSS, JavaScript를 수정할 때 Rust를 다시 컴파일할 필요가 없습니다. 배포 시에는
+이 디렉터리도 실행 파일 및 `config.toml`과 함께 복사해야 합니다.
 
 ### 지원 브라우저
 

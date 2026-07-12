@@ -44,6 +44,9 @@ pub struct ModelPricing {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Directory containing dashboard.html, styles.css, and the JavaScript files.
+    /// Relative paths are resolved from the directory containing config.toml.
+    pub frontend_dir: String,
 }
 
 impl Default for ServerConfig {
@@ -51,6 +54,7 @@ impl Default for ServerConfig {
         Self {
             host: "127.0.0.1".into(),
             port: 3000,
+            frontend_dir: "src/frontend".into(),
         }
     }
 }
@@ -131,6 +135,7 @@ pub struct Config {
     server: ServerConfig,
     dashboard: DashboardConfig,
     cache_path: PathBuf,
+    frontend_dir: PathBuf,
     timeouts: TimeoutConfig,
     model_pricing: HashMap<String, ModelPricing>,
     codex: Vec<(CodexAccount, bool)>,
@@ -150,6 +155,9 @@ impl Config {
     }
     pub fn cache_path(&self) -> &Path {
         &self.cache_path
+    }
+    pub fn frontend_dir(&self) -> &Path {
+        &self.frontend_dir
     }
     pub fn timeouts(&self) -> &TimeoutConfig {
         &self.timeouts
@@ -228,6 +236,9 @@ impl Config {
         if raw.server.host.trim().is_empty() {
             return Err("server.host must not be empty".into());
         }
+        if raw.server.frontend_dir.trim().is_empty() {
+            return Err("server.frontend_dir must not be empty".into());
+        }
         if raw.dashboard.page_size == 0 {
             return Err("dashboard.page_size must be greater than 0".into());
         }
@@ -247,6 +258,12 @@ impl Config {
             configured_cache
         } else {
             config_dir.join(configured_cache)
+        };
+        let configured_frontend = expand_home(&raw.server.frontend_dir);
+        let frontend_dir = if configured_frontend.is_absolute() {
+            configured_frontend
+        } else {
+            config_dir.join(configured_frontend)
         };
         let mut server = raw.server;
         if let Some(port) = raw.port {
@@ -285,6 +302,7 @@ impl Config {
             server,
             dashboard: raw.dashboard,
             cache_path,
+            frontend_dir,
             timeouts: raw.timeouts,
             model_pricing: raw.model_pricing,
             codex,
