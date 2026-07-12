@@ -5,15 +5,18 @@
 //!   (cumulative) — mixing the two double-counts.
 //! - The current model comes from the most recent `turn_context` event.
 //! - `info: null` token_count events are skipped.
-//! - Per-account rate limit snapshot = latest non-null `rate_limits` seen
-//!   across all sessions.
+//! - Token usage comes exclusively from the local session logs.
+//! - Rate limits are fetched separately through `codex app-server`.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::model::{RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord};
@@ -40,30 +43,6 @@ pub struct TokenUsage {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct RateLimitWindow {
-    #[serde(default)]
-    pub used_percent: f64,
-    #[serde(default)]
-    pub window_minutes: u64,
-    #[serde(default)]
-    pub resets_at: i64,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RateLimits {
-    #[serde(default)]
-    pub limit_id: Option<String>,
-    #[serde(default)]
-    pub primary: Option<RateLimitWindow>,
-    #[serde(default)]
-    pub secondary: Option<RateLimitWindow>,
-    #[serde(default)]
-    pub plan_type: Option<String>,
-    #[serde(default)]
-    pub rate_limit_reached_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
 struct TokenCountInfo {
     #[serde(default)]
     last_token_usage: Option<TokenUsage>,
@@ -78,8 +57,6 @@ struct EventMsgPayload {
     kind: Option<String>,
     #[serde(default)]
     info: Option<TokenCountInfo>,
-    #[serde(default)]
-    rate_limits: Option<RateLimits>,
     /// turn_context payload field
     #[serde(default)]
     model: Option<String>,
@@ -99,19 +76,14 @@ struct RolloutLine {
 #[derive(Debug, Default)]
 pub struct CodexParseResult {
     pub records: Vec<UsageRecord>,
-    pub rate_limit_snapshot: Option<RateLimitSnapshot>,
 }
 
 pub fn parse_account(account: &CodexAccount) -> CodexParseResult {
     let sessions_dir = account.codex_home.join("sessions");
     let mut records = Vec::new();
-    let mut latest_snapshot: Option<RateLimitSnapshot> = None;
 
     if !sessions_dir.is_dir() {
-        return CodexParseResult {
-            records,
-            rate_limit_snapshot: latest_snapshot,
-        };
+        return CodexParseResult { records };
     }
 
     for entry in WalkDir::new(&sessions_dir)
@@ -130,21 +102,13 @@ pub fn parse_account(account: &CodexAccount) -> CodexParseResult {
             continue;
         }
 
-        parse_file(path, &account.name, &mut records, &mut latest_snapshot);
+        parse_file(path, &account.name, &mut records);
     }
 
-    CodexParseResult {
-        records,
-        rate_limit_snapshot: latest_snapshot,
-    }
+    CodexParseResult { records }
 }
 
-fn parse_file(
-    path: &Path,
-    account: &str,
-    records: &mut Vec<UsageRecord>,
-    latest_snapshot: &mut Option<RateLimitSnapshot>,
-) {
+fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>) {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
@@ -224,45 +188,184 @@ fn parse_file(
                         is_subagent: false,
                     });
                 }
-
-                if let Some(rl) = ev.rate_limits {
-                    // Only keep non-null primary/secondary snapshots, and
-                    // only if this event is newer than what we have.
-                    if rl.primary.is_some() || rl.secondary.is_some() {
-                        let is_newer = latest_snapshot
-                            .as_ref()
-                            .map(|s| timestamp > s.observed_at)
-                            .unwrap_or(true);
-                        if is_newer {
-                            *latest_snapshot = Some(RateLimitSnapshot {
-                                source: Source::Codex,
-                                account: account.to_string(),
-                                observed_at: timestamp,
-                                limit_id: rl.limit_id,
-                                plan_type: rl.plan_type,
-                                rate_limit_reached_type: rl.rate_limit_reached_type,
-                                primary: rl.primary.map(|w| RateLimitWindowSnapshot {
-                                    used_percent: w.used_percent,
-                                    window_minutes: w.window_minutes,
-                                    resets_at: w.resets_at,
-                                }),
-                                secondary: rl.secondary.map(|w| RateLimitWindowSnapshot {
-                                    used_percent: w.used_percent,
-                                    window_minutes: w.window_minutes,
-                                    resets_at: w.resets_at,
-                                }),
-                                // Claude Code (OAuth usage API) only.
-                                seven_day_opus: None,
-                                seven_day_sonnet: None,
-                                extra_usage: None,
-                            });
-                        }
-                    }
-                }
             }
             _ => {} // response_item, session_meta, and anything else is ignored
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct AppServerRequest<'a> {
+    id: u64,
+    method: &'a str,
+    params: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppServerRateLimitWindow {
+    used_percent: f64,
+    window_duration_mins: Option<u64>,
+    resets_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppServerRateLimits {
+    limit_id: Option<String>,
+    plan_type: Option<String>,
+    rate_limit_reached_type: Option<String>,
+    primary: Option<AppServerRateLimitWindow>,
+    secondary: Option<AppServerRateLimitWindow>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppServerRateLimitsResponse {
+    rate_limits: AppServerRateLimits,
+}
+
+fn app_server_snapshot(
+    account: &CodexAccount,
+    response: AppServerRateLimitsResponse,
+) -> Option<RateLimitSnapshot> {
+    let rl = response.rate_limits;
+    if rl.primary.is_none() && rl.secondary.is_none() {
+        return None;
+    }
+    let window = |w: AppServerRateLimitWindow| RateLimitWindowSnapshot {
+        used_percent: w.used_percent,
+        window_minutes: w.window_duration_mins.unwrap_or_default(),
+        resets_at: w.resets_at.unwrap_or_default(),
+    };
+    Some(RateLimitSnapshot {
+        source: Source::Codex,
+        account: account.name.clone(),
+        observed_at: Utc::now(),
+        limit_id: rl.limit_id,
+        plan_type: rl.plan_type,
+        rate_limit_reached_type: rl.rate_limit_reached_type,
+        primary: rl.primary.map(window),
+        secondary: rl.secondary.map(window),
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        extra_usage: None,
+    })
+}
+
+/// Fetch the current ChatGPT Codex rate-limit windows through the local Codex
+/// app-server protocol. Token usage is deliberately not read through this API.
+pub fn fetch_rate_limit_snapshot(
+    account: &CodexAccount,
+    timeout_seconds: u64,
+) -> Option<RateLimitSnapshot> {
+    let mut child = match Command::new("codex")
+        .args(["app-server", "--stdio"])
+        .env("CODEX_HOME", &account.codex_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("codex/{}: failed to start app-server: {e}", account.name);
+            return None;
+        }
+    };
+
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let initialize = AppServerRequest {
+        id: 1,
+        method: "initialize",
+        params: serde_json::json!({
+            "clientInfo": {
+                "name": "usage_ai_dashboard",
+                "title": "Usage AI Dashboard",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }),
+    };
+    let read_limits = AppServerRequest {
+        id: 2,
+        method: "account/rateLimits/read",
+        params: serde_json::Value::Null,
+    };
+
+    use std::io::Write;
+    let write_result = (|| -> std::io::Result<()> {
+        serde_json::to_writer(&mut stdin, &initialize)?;
+        writeln!(stdin)?;
+        writeln!(stdin, "{{\"method\":\"initialized\"}}")?;
+        serde_json::to_writer(&mut stdin, &read_limits)?;
+        writeln!(stdin)?;
+        stdin.flush()
+    })();
+    if let Err(e) = write_result {
+        eprintln!("codex/{}: failed to query app-server: {e}", account.name);
+        let _ = child.kill();
+        return None;
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_seconds);
+    let mut snapshot = None;
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(Ok(line)) => {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if value.get("id").and_then(|id| id.as_u64()) != Some(2) {
+                    continue;
+                }
+                if let Some(error) = value.get("error") {
+                    eprintln!(
+                        "codex/{}: app-server rate-limit error: {error}",
+                        account.name
+                    );
+                    break;
+                }
+                if let Some(result) = value.get("result") {
+                    match serde_json::from_value::<AppServerRateLimitsResponse>(result.clone()) {
+                        Ok(response) => snapshot = app_server_snapshot(account, response),
+                        Err(e) => eprintln!(
+                            "codex/{}: invalid app-server rate-limit response: {e}",
+                            account.name
+                        ),
+                    }
+                }
+                break;
+            }
+            Ok(Err(e)) => {
+                eprintln!(
+                    "codex/{}: failed reading app-server response: {e}",
+                    account.name
+                );
+                break;
+            }
+            Err(_) => {
+                eprintln!(
+                    "codex/{}: app-server rate-limit query timed out",
+                    account.name
+                );
+                break;
+            }
+        }
+    }
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    snapshot
 }
 
 #[cfg(test)]
@@ -285,8 +388,7 @@ mod tests {
         let tmp = write_temp_jsonl(&lines_ref);
 
         let mut records = Vec::new();
-        let mut snapshot = None;
-        parse_file(&tmp.path, "user01", &mut records, &mut snapshot);
+        parse_file(&tmp.path, "user01", &mut records);
 
         assert_eq!(records.len(), 2);
         let total_input: u64 = records.iter().map(|r| r.input_tokens).sum();
@@ -308,8 +410,7 @@ mod tests {
         ];
         let tmp = write_temp_jsonl(&lines);
         let mut records = Vec::new();
-        let mut snapshot = None;
-        parse_file(&tmp.path, "user01", &mut records, &mut snapshot);
+        parse_file(&tmp.path, "user01", &mut records);
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 16296 - 11648);
@@ -324,8 +425,7 @@ mod tests {
         ];
         let tmp = write_temp_jsonl(&lines);
         let mut records = Vec::new();
-        let mut snapshot = None;
-        parse_file(&tmp.path, "user01", &mut records, &mut snapshot);
+        parse_file(&tmp.path, "user01", &mut records);
         assert_eq!(records.len(), 0);
     }
 
@@ -337,27 +437,29 @@ mod tests {
         ];
         let tmp = write_temp_jsonl(&lines);
         let mut records = Vec::new();
-        let mut snapshot = None;
-        parse_file(&tmp.path, "user01", &mut records, &mut snapshot);
+        parse_file(&tmp.path, "user01", &mut records);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 5);
     }
 
     #[test]
-    fn captures_latest_rate_limit_snapshot() {
-        let lines = vec![
-            r#"{"timestamp":"2026-06-26T15:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":1}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":10.0,"window_minutes":300,"resets_at":1000},"secondary":{"used_percent":20.0,"window_minutes":10080,"resets_at":2000},"plan_type":"team"}}}"#,
-            r#"{"timestamp":"2026-06-26T16:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":1}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":44.0,"window_minutes":300,"resets_at":1500},"secondary":{"used_percent":99.0,"window_minutes":10080,"resets_at":2500},"plan_type":"team"}}}"#,
-            r#"{"timestamp":"2026-06-26T17:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":1}},"rate_limits":{"limit_id":"premium","primary":null,"secondary":null,"credits":{},"plan_type":"premium"}}}"#,
-        ];
-        let tmp = write_temp_jsonl(&lines);
-        let mut records = Vec::new();
-        let mut snapshot = None;
-        parse_file(&tmp.path, "user01", &mut records, &mut snapshot);
-        let snap = snapshot.unwrap();
-        // The premium null-limits event is newer but must be skipped;
-        // last non-null snapshot (16:00) wins.
+    fn converts_app_server_rate_limit_response() {
+        let account = CodexAccount {
+            name: "user01".into(),
+            codex_home: ".".into(),
+        };
+        let response: AppServerRateLimitsResponse = serde_json::from_value(serde_json::json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "planType": "team",
+                "primary": { "usedPercent": 44, "windowDurationMins": 300, "resetsAt": 1500 },
+                "secondary": { "usedPercent": 99, "windowDurationMins": 10080, "resetsAt": 2500 }
+            }
+        }))
+        .unwrap();
+        let snap = app_server_snapshot(&account, response).unwrap();
+        assert_eq!(snap.limit_id.as_deref(), Some("codex"));
         assert_eq!(snap.primary.unwrap().used_percent, 44.0);
-        assert_eq!(snap.secondary.unwrap().used_percent, 99.0);
+        assert_eq!(snap.secondary.unwrap().window_minutes, 10080);
     }
 }

@@ -122,7 +122,7 @@ async fn get_usage(State(state): State<SharedState>) -> impl IntoResponse {
 }
 
 /// GET /api/rate_limits - latest rate limit snapshot per (source, account).
-/// Codex snapshots come from session logs; claude_code from the OAuth usage API.
+/// Codex snapshots come from its app-server; claude_code from the OAuth usage API.
 async fn get_rate_limits(State(state): State<SharedState>) -> impl IntoResponse {
     let body = state.read().unwrap().rate_limits_json.clone();
     (

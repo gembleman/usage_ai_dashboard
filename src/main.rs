@@ -235,7 +235,14 @@ pub fn parse_all(
     let (codex_results, claude_results) = std::thread::scope(|s| {
         let codex_handles: Vec<_> = codex_accounts
             .iter()
-            .map(|account| s.spawn(move || codex::parse_account(account)))
+            .map(|account| {
+                s.spawn(move || {
+                    let result = codex::parse_account(account);
+                    let snapshot =
+                        codex::fetch_rate_limit_snapshot(account, config.timeouts().api_seconds);
+                    (result, snapshot)
+                })
+            })
             .collect();
         let claude_handles: Vec<_> = claude_accounts
             .iter()
@@ -269,10 +276,10 @@ pub fn parse_all(
     let mut rate_limit_snapshots: Vec<RateLimitSnapshot> = Vec::new();
     let mut per_account: Vec<(String, usize)> = Vec::new();
 
-    for (account, result) in codex_accounts.iter().zip(codex_results) {
+    for (account, (result, snapshot)) in codex_accounts.iter().zip(codex_results) {
         per_account.push((format!("codex/{}", account.name), result.records.len()));
         all_records.extend(result.records);
-        if let Some(snap) = result.rate_limit_snapshot {
+        if let Some(snap) = snapshot {
             rate_limit_snapshots.push(snap);
         }
     }
