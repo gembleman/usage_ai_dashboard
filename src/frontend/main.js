@@ -5,6 +5,7 @@ import {
   applyDashboardSettings,
   setGlobalRange,
   setUsageTableAccount,
+  setUsageTableModel,
   setUsageTableSource,
 } from './tables.js';
 
@@ -117,6 +118,10 @@ document.getElementById('sourceTabs').addEventListener('click', (e) => {
 
 document.getElementById('accountSelect').addEventListener('change', (e) => {
   setUsageTableAccount(e.target.value);
+});
+
+document.getElementById('modelSelect').addEventListener('change', (e) => {
+  setUsageTableModel(e.target.value);
 });
 
 document.getElementById('globalRangeTabs').addEventListener('click', (e) => {

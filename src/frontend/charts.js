@@ -211,7 +211,8 @@ export function renderModelChart(rows) {
     byModelUsage.set(model, u);
   }
   const rawEntries = [...byModelUsage].map(([model, u]) => [model, u.total]).sort((a, b) => b[1] - a[1]);
-  const total = rawEntries.reduce((s, [, v]) => s + v, 0) || 1;
+  const totalTokens = rawEntries.reduce((s, [, v]) => s + v, 0);
+  const total = totalTokens || 1;
   const totalCost = [...byModelUsage.entries()].reduce((s, [m, u]) => {
     const c = estimateCostUsd(m, u.input, u.cached, u.creation, u.output);
     return s + (c || 0);
@@ -277,7 +278,8 @@ export function renderModelChart(rows) {
   const totalItem = document.createElement('div');
   totalItem.className = 'legend-item legend-total';
   const totalText = document.createElement('b');
-  totalText.textContent = `총 예상 비용: ${fmtUsd(totalCost)}`;
+  totalText.textContent = `총 예상 비용: ${fmtUsd(totalCost)} · 총 소모 토큰: ${fmtKo(totalTokens)}`;
+  totalText.title = `총 소모 토큰: ${totalTokens.toLocaleString('ko-KR')}`;
   totalItem.appendChild(totalText);
 
   const fragment = document.createDocumentFragment();

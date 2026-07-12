@@ -16,48 +16,52 @@
   <span id="status" aria-live="polite"></span>
 </div>
 
-<div class="panel">
-  <h2>요청 한도 (Codex &times; Claude Code)</h2>
-  <div id="rateLimits"></div>
-</div>
-
-<div class="panel">
-  <h2>기간 필터 (전체 패널에 적용)</h2>
-  <div class="tabs" id="globalRangeTabs" role="tablist" aria-label="기간 필터">
-    <button class="tab-btn" data-range="1d" role="tab" aria-selected="false">최근 1일</button>
-    <button class="tab-btn" data-range="7d" role="tab" aria-selected="false">최근 1주</button>
-    <button class="tab-btn" data-range="30d" role="tab" aria-selected="false">최근 1개월</button>
-    <button class="tab-btn" data-range="365d" role="tab" aria-selected="false">최근 1년</button>
-    <button class="tab-btn active" data-range="all" role="tab" aria-selected="true">전체</button>
-  </div>
-</div>
-
-<div class="panel">
-  <h2>일별 토큰 사용량 (소스 &times; 계정)</h2>
-  <div id="trendChart"></div>
-  <div id="trendLegend" class="legend"></div>
-</div>
-
-<div class="grid-2">
+<div class="overview-grid">
   <div class="panel">
-    <h2>계정별 합계</h2>
-    <div class="table-scroll">
-      <table id="accountTable">
-        <thead>
-          <tr>
-            <th>소스</th><th>계정</th><th>입력</th><th>캐시 입력</th>
-            <th>출력</th><th>합계</th><th>턴 수</th><th>예상 비용</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <h2>요청 한도 (Codex &times; Claude Code)</h2>
+    <div id="rateLimits"></div>
+  </div>
+
+  <div class="overview-side">
+    <div class="panel">
+      <h2>기간 필터 (전체 패널에 적용)</h2>
+      <div class="tabs" id="globalRangeTabs" role="tablist" aria-label="기간 필터">
+        <button class="tab-btn" data-range="1d" role="tab" aria-selected="false">최근 1일</button>
+        <button class="tab-btn" data-range="7d" role="tab" aria-selected="false">최근 1주</button>
+        <button class="tab-btn" data-range="30d" role="tab" aria-selected="false">최근 1개월</button>
+        <button class="tab-btn" data-range="365d" role="tab" aria-selected="false">최근 1년</button>
+        <button class="tab-btn active" data-range="all" role="tab" aria-selected="true">전체</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>일별 토큰 사용량 (소스 &times; 계정)</h2>
+      <div id="trendChart"></div>
+      <div id="trendLegend" class="legend"></div>
+    </div>
+
+    <div class="panel">
+      <h2>모델별 분포 (총 토큰 기준)</h2>
+      <div class="model-panel-content">
+        <div id="modelChart"></div>
+        <div id="modelLegend" class="legend"></div>
+      </div>
     </div>
   </div>
+</div>
 
-  <div class="panel">
-    <h2>모델별 분포 (총 토큰 기준)</h2>
-    <div id="modelChart"></div>
-    <div id="modelLegend" class="legend"></div>
+<div class="panel">
+  <h2>계정별 합계</h2>
+  <div class="table-scroll">
+    <table id="accountTable">
+      <thead>
+        <tr>
+          <th>소스</th><th>계정</th><th>입력</th><th>캐시 입력</th>
+          <th>출력</th><th>합계</th><th>턴 수</th><th>예상 비용</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
   </div>
 </div>
 
@@ -71,6 +75,10 @@
   <div class="filter-row">
     <label for="accountSelect">계정:</label>
     <select id="accountSelect">
+      <option value="all">전체 (합산)</option>
+    </select>
+    <label for="modelSelect">모델:</label>
+    <select id="modelSelect">
       <option value="all">전체 (합산)</option>
     </select>
   </div>

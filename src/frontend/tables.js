@@ -51,7 +51,7 @@ function applyGlobalRangeFilter() {
   renderTrendChart(filtered);
   renderModelChart(filtered);
   // 상세 내역 테이블도 전역 기간 필터를 따른다. renderUsageTable은 raw만 교체하고
-  // 기존 source/account 탭 선택은 usageTableState/updateAccountOptions가 보존한다
+  // 기존 source/account/model 선택은 usageTableState와 옵션 갱신 함수가 보존한다
   // (기간 변경으로 데이터셋이 바뀌므로 page 리셋은 자연스럽다).
   renderUsageTable(filtered);
 }
@@ -133,20 +133,21 @@ export function applyDashboardSettings(settings) {
   if (Number.isInteger(settings?.page_size) && settings.page_size > 0) usagePageSize = settings.page_size;
   setModelChartMaxItems(settings?.model_chart_max_items);
 }
-let usageTableState = { raw: [], sorted: [], page: 1, source: 'all', account: 'all' };
+let usageTableState = { raw: [], sorted: [], page: 1, source: 'all', account: 'all', model: 'all' };
 
-// (source, account, date, model) 기준으로 합산. 계정이 'all'이 아니면 해당 계정만 대상으로 한다.
-// 비용은 모델별 단가가 다르므로 모델 단위로 먼저 계산한 뒤 합산한다.
-function aggregateUsageRows(rows) {
-  // 날짜 내림차순을 우선하되, 같은 날짜 내에서는 source/account/model 순으로 안정 정렬한다.
-  return [...Map.groupBy(rows, r => `${r.source}/${r.account}/${r.date}/${r.model}`).values()]
-    .map(sumUsageGroup)
-    .sort((a, b) =>
-    (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) ||
-    a.source.localeCompare(b.source) ||
-    a.account.localeCompare(b.account) ||
-    a.model.localeCompare(b.model)
-  );
+// 선택한 필터를 적용한 뒤 날짜별로 합산한다. "전체"인 차원은 한 행 안에서
+// 모두 합쳐지며, 선택된 차원은 해당 값을 구분 열에 표시한다.
+// 비용은 각 원본 행의 모델 단가로 먼저 계산한 뒤 합산한다.
+function aggregateUsageRows(rows, { source, account, model }) {
+  return [...Map.groupBy(rows, r => r.date).values()]
+    .map(group => {
+      const row = sumUsageGroup(group);
+      row.source = source;
+      row.account = account === 'all' ? '전체' : account;
+      row.model = model === 'all' ? '전체' : model;
+      return row;
+    })
+    .sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
 }
 
 // 선택된 소스(source)에 해당하는 계정만 옵션으로 보여준다. 현재 선택된 계정이
@@ -165,10 +166,27 @@ function updateAccountOptions(rows, source) {
   return next;
 }
 
+// 모델 옵션은 현재 소스와 계정 범위에 맞춘다. 상위 필터 변경으로 기존 모델이
+// 범위에서 사라지면 "전체"로 되돌린다.
+function updateModelOptions(rows, source, account) {
+  const select = document.getElementById('modelSelect');
+  const scoped = filterByAccount(filterBySource(rows, source), account);
+  const models = [...new Set(scoped.map(r => r.model))].sort();
+  const current = select.value || 'all';
+  select.replaceChildren(
+    new Option('전체 (합산)', 'all'),
+    ...models.map(model => new Option(model, model))
+  );
+  const next = models.includes(current) ? current : 'all';
+  select.value = next;
+  return next;
+}
+
 export function renderUsageTable(rows) {
   usageTableState.raw = rows;
   const account = updateAccountOptions(rows, usageTableState.source);
   usageTableState.account = account;
+  usageTableState.model = updateModelOptions(rows, usageTableState.source, account);
   applyUsageTableFilters();
 }
 
@@ -180,10 +198,14 @@ function filterByAccount(rows, account) {
   return account === 'all' ? rows : rows.filter(r => r.account === account);
 }
 
+function filterByModel(rows, model) {
+  return model === 'all' ? rows : rows.filter(r => r.model === model);
+}
+
 function applyUsageTableFilters() {
-  const { raw, source, account } = usageTableState;
-  const filtered = filterByAccount(filterBySource(raw, source), account);
-  usageTableState.sorted = aggregateUsageRows(filtered);
+  const { raw, source, account, model } = usageTableState;
+  const filtered = filterByModel(filterByAccount(filterBySource(raw, source), account), model);
+  usageTableState.sorted = aggregateUsageRows(filtered, usageTableState);
   usageTableState.page = 1;
   renderUsageTablePage();
 }
@@ -194,6 +216,7 @@ export function setUsageTableSource(source) {
   // 새 목록에 없으면 "전체"로 되돌린다.
   updateWithViewTransition(() => {
     usageTableState.account = updateAccountOptions(usageTableState.raw, source);
+    usageTableState.model = updateModelOptions(usageTableState.raw, source, usageTableState.account);
     applyUsageTableFilters();
   });
 
@@ -206,12 +229,20 @@ export function setUsageTableSource(source) {
 
 export function setUsageTableAccount(account) {
   usageTableState.account = account;
+  updateWithViewTransition(() => {
+    usageTableState.model = updateModelOptions(usageTableState.raw, usageTableState.source, account);
+    applyUsageTableFilters();
+  });
+}
+
+export function setUsageTableModel(model) {
+  usageTableState.model = model;
   updateWithViewTransition(applyUsageTableFilters);
 }
 
 function appendUsageRow(parent, r) {
   const tr = document.createElement('tr');
-  appendTextCell(tr, SOURCE_LABELS[r.source] || r.source);
+  appendTextCell(tr, r.source === 'all' ? '전체' : (SOURCE_LABELS[r.source] || r.source));
   appendTextCell(tr, r.account);
   appendTextCell(tr, r.date);
   appendTextCell(tr, r.model);
