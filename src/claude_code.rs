@@ -368,6 +368,10 @@ pub fn fetch_rate_limit_snapshot(
     account: &ClaudeAccount,
     timeout_seconds: u64,
 ) -> Option<RateLimitSnapshot> {
+    // `reqwest` is built without a default TLS provider; install the smaller
+    // Ring provider once (concurrent/repeated attempts harmlessly return Err).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let oauth = read_oauth_credentials(account)?;
     let token = oauth.access_token.as_deref()?;
 
