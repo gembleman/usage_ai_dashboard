@@ -55,6 +55,12 @@ include_subagents = true
 ./usage_ai_dashboard.exe serve
 ```
 
+### 지원 브라우저
+
+Chrome, Edge, Firefox, Safari의 최신 안정 버전만 지원합니다. 대시보드는
+`Temporal`, `Intl.DurationFormat`, `Map.groupBy`, `AbortSignal.timeout` 및
+`AbortSignal.any`를 폴리필 없이 사용하므로 구형 브라우저는 지원하지 않습니다.
+
 ## 통계를 보고 얻은 통찰
 6개월간 사용량이 대략 100억 토큰.  
 2025년부터 써왔으니, 대략 200억 토큰 정도 쓰지 않았을까 싶습니다.  

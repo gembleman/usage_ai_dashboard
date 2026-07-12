@@ -218,7 +218,7 @@ fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest
                             window_minutes: w.window_minutes,
                             resets_at: w.resets_at,
                         };
-                        *latest_snapshot = Some(RateLimitSnapshot {
+                        let incoming = RateLimitSnapshot {
                             source: Source::Codex,
                             account: account.to_string(),
                             observed_at: timestamp,
@@ -230,7 +230,15 @@ fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest
                             seven_day_opus: None,
                             seven_day_sonnet: None,
                             extra_usage: None,
-                        });
+                        };
+                        // Newer Codex versions can emit a partial snapshot
+                        // containing only the weekly window. Keep windows of
+                        // other durations from the preceding log snapshot so
+                        // a weekly-only event does not erase the 5-hour quota.
+                        *latest_snapshot = merge_rate_limit_snapshots(
+                            latest_snapshot.take(),
+                            Some(incoming),
+                        );
                     }
                 }
             }
@@ -508,6 +516,25 @@ mod tests {
         parse_file(&tmp.path, "user01", &mut records, &mut None);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 5);
+    }
+
+    #[test]
+    fn newer_weekly_only_log_snapshot_preserves_session_window() {
+        let lines = vec![
+            r#"{"timestamp":"2026-06-26T15:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":6}},"rate_limits":{"limit_id":"codex","plan_type":"team","primary":{"used_percent":44.0,"window_minutes":300,"resets_at":1500},"secondary":{"used_percent":22.0,"window_minutes":10080,"resets_at":2500}}}}"#,
+            r#"{"timestamp":"2026-06-26T15:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":6}},"rate_limits":{"limit_id":"codex","plan_type":"team","primary":{"used_percent":23.0,"window_minutes":10080,"resets_at":2600},"secondary":null}}}"#,
+        ];
+        let tmp = write_temp_jsonl(&lines);
+        let mut records = Vec::new();
+        let mut snapshot = None;
+        parse_file(&tmp.path, "user02", &mut records, &mut snapshot);
+
+        let snapshot = snapshot.unwrap();
+        assert_eq!(snapshot.observed_at.to_rfc3339(), "2026-06-26T15:02:00+00:00");
+        assert_eq!(snapshot.primary.as_ref().unwrap().window_minutes, 300);
+        assert_eq!(snapshot.primary.as_ref().unwrap().used_percent, 44.0);
+        assert_eq!(snapshot.secondary.as_ref().unwrap().window_minutes, 10080);
+        assert_eq!(snapshot.secondary.as_ref().unwrap().used_percent, 23.0);
     }
 
     #[test]

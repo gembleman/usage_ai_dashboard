@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::model::{Source, UsageRecord};
+use crate::model::{RateLimitSnapshot, Source, UsageRecord};
 use crate::{AggKey, AggTotals, aggregate, parse_all};
 
 const DASHBOARD_HTML: &str = include_str!("frontend/dashboard.html");
@@ -89,7 +89,7 @@ fn agg_totals_to_row(
 }
 
 /// Serialize a value into a pre-built JSON response body.
-fn to_json_bytes<T: Serialize>(value: &T) -> Bytes {
+fn to_json_bytes<T: Serialize + ?Sized>(value: &T) -> Bytes {
     Bytes::from(serde_json::to_vec(value).expect("JSON serialization failed"))
 }
 
@@ -161,6 +161,34 @@ struct RefreshResponse {
     rate_limit_count: usize,
 }
 
+type RefreshPayload = (Bytes, Bytes, usize, usize);
+type CachedAggregate = (
+    std::collections::BTreeMap<AggKey, AggTotals>,
+    Vec<RateLimitSnapshot>,
+    usize,
+);
+
+fn build_refresh_payload(
+    records: &[UsageRecord],
+    fresh_rate_limits: &[RateLimitSnapshot],
+    cached: Option<CachedAggregate>,
+) -> RefreshPayload {
+    match cached {
+        Some((agg, rate_limits, record_count)) => (
+            build_aggregate_json(&agg),
+            to_json_bytes(&rate_limits),
+            record_count,
+            rate_limits.len(),
+        ),
+        None => (
+            build_usage_json(records),
+            to_json_bytes(fresh_rate_limits),
+            records.len(),
+            fresh_rate_limits.len(),
+        ),
+    }
+}
+
 /// POST /api/refresh - re-run the parsers, merge the result into the on-disk
 /// cache, and replace the in-memory state with the merged history (so records
 /// preserved from rotated-out session logs stay visible).
@@ -176,15 +204,9 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
     let (usage_json, rate_limits_json, record_count, rate_limit_count) =
         tokio::task::spawn_blocking(move || {
             let (records, rate_limits, _summary) = parse_all(&config, include_dormant_claude);
-            let mut records = Some(records);
             let merged = match Cache::open(&cache_path) {
-                Ok(mut cache) => match cache.save(records.as_deref().unwrap(), &rate_limits) {
-                    Ok(()) => {
-                        // The cache owns the durable copy now; release the raw
-                        // transcript rows before SQLite performs aggregation.
-                        drop(records.take());
-                        cache.load_aggregate().ok().flatten()
-                    }
+                Ok(mut cache) => match cache.save(&records, &rate_limits) {
+                    Ok(()) => cache.load_aggregate().ok().flatten(),
                     Err(e) => {
                         eprintln!("Warning: failed to write cache: {e}");
                         None
@@ -195,21 +217,9 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
                     None
                 }
             };
-            // If the cache is unavailable, fall back to just the fresh parse.
-            match merged {
-                Some((agg, rate_limits, record_count)) => (
-                    build_aggregate_json(&agg),
-                    to_json_bytes(&rate_limits),
-                    record_count,
-                    rate_limits.len(),
-                ),
-                None => (
-                    build_usage_json(records.as_deref().unwrap()),
-                    to_json_bytes(&rate_limits),
-                    records.as_ref().unwrap().len(),
-                    rate_limits.len(),
-                ),
-            }
+            // An empty cache has no aggregate, so retain the fresh parse until
+            // this fallback has been built instead of taking and unwrapping it.
+            build_refresh_payload(&records, &rate_limits, merged)
         })
         .await
         .expect("parse task panicked");
@@ -226,6 +236,22 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
             rate_limit_count,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_refresh_without_cached_aggregate_returns_empty_json() {
+        let (usage, rate_limits, record_count, rate_limit_count) =
+            build_refresh_payload(&[], &[], None);
+
+        assert_eq!(usage.as_ref(), b"[]");
+        assert_eq!(rate_limits.as_ref(), b"[]");
+        assert_eq!(record_count, 0);
+        assert_eq!(rate_limit_count, 0);
+    }
 }
 
 async fn get_index() -> impl IntoResponse {
