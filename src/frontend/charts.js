@@ -32,6 +32,33 @@ function modelCostUsd(model, u) {
   return estimateCostUsd(model, u.input, u.cached, u.creation, u.output);
 }
 
+// SVG y축 라벨이 길어질 때 필요한 왼쪽 여백을 실제 사용 글꼴로 계산한다.
+// 기본 여백은 유지하고, 긴 숫자에 필요한 만큼만 차트 전체 폭을 늘린다.
+function yAxisPadding(labels, minimum = 56) {
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) return minimum;
+  const mono = getComputedStyle(document.documentElement).getPropertyValue('--mono').trim() || 'monospace';
+  context.font = `10px ${mono}`;
+  const widest = Math.max(0, ...labels.map(label => context.measureText(label).width));
+  return Math.max(minimum, Math.ceil(widest) + 12);
+}
+
+// 차트 최댓값의 가장 큰 단위로 모든 y축 눈금을 통일한다.
+// 예: 최댓값이 1,715,596,790이면 "17.16억"으로 간결하게 표시한다.
+function compactYAxisLabels(maxValue, steps) {
+  const units = [
+    { minimum: 100_000_000, divisor: 100_000_000, suffix: '억' },
+    { minimum: 10_000, divisor: 10_000, suffix: '만' },
+    { minimum: 1_000, divisor: 1_000, suffix: '천' },
+  ];
+  const unit = units.find(candidate => maxValue >= candidate.minimum);
+  const format = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 });
+  return Array.from({ length: steps + 1 }, (_, i) => {
+    const value = (maxValue / steps) * i;
+    return unit ? `${format.format(value / unit.divisor)}${unit.suffix}` : format.format(value);
+  });
+}
+
 function trendPointFromEvent(evt) {
   if (!trendChartState || !evt.target || !evt.target.closest) return null;
   return evt.target.closest('circle.pt');
@@ -153,17 +180,20 @@ export function renderTrendChart(rows) {
   // (365일 × 60px ≈ 22,000px짜리 SVG는 렌더링/스크롤이 무겁다).
   const pxPerDate = dates.length <= 31 ? 60 : dates.length <= 120 ? 24 : 10;
   const pointRadius = dates.length <= 120 ? 3 : 2;
-  const width = Math.max(600, dates.length * pxPerDate);
-  const height = 260;
-  const padL = 56, padR = 16, padT = 12, padB = 28;
-  const plotW = width - padL - padR;
-  const plotH = height - padT - padB;
-
   // 시리즈는 겹쳐서(overlay) 그리므로 Y축 최댓값은 "개별 시리즈 값의 최댓값"이어야 한다.
   // (합계로 계산하면 스택 차트용 스케일이 되어 모든 선이 하단에 압축되어 보인다.)
   const maxVal = Math.max(1, ...dates.flatMap(d =>
     keys.map(k => byDateSeries[d][k] || 0)
   ));
+  const gridSteps = 4;
+  const yLabels = compactYAxisLabels(maxVal, gridSteps);
+  const defaultPadL = 56;
+  const padL = yAxisPadding(yLabels, defaultPadL);
+  const width = Math.max(600, dates.length * pxPerDate) + (padL - defaultPadL);
+  const height = 260;
+  const padR = 16, padT = 12, padB = 28;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
 
   const xStep = dates.length > 1 ? plotW / (dates.length - 1) : 0;
   const x = i => padL + (dates.length > 1 ? i * xStep : plotW / 2);
@@ -173,12 +203,11 @@ export function renderTrendChart(rows) {
   let svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="display:block" role="img" aria-label="${escapeHtml(chartTitle)}"><title>${escapeHtml(chartTitle)}</title>`;
 
   // gridlines + y labels
-  const gridSteps = 4;
   for (let i = 0; i <= gridSteps; i++) {
     const v = (maxVal / gridSteps) * i;
     const y = yFor(v);
     svg += `<line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="var(--grid-line)" stroke-width="1"/>`;
-    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${fmtKo(v)}</text>`;
+    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${yLabels[i]}</text>`;
   }
 
   // x labels (thin out if too many)
