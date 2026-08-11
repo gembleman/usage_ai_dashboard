@@ -15,6 +15,7 @@ import {
 // 현재 렌더링된 트렌드 차트의 데이터. 포인트 툴팁이 이벤트 위임 핸들러에서
 // 참조한다 (포인트가 수천 개일 수 있어 각 원에 리스너를 붙이지 않는다).
 let trendChartState = null;
+let hourlyChartState = null;
 let modelChartState = null;
 let modelChartMaxItems = 8;
 
@@ -59,6 +60,40 @@ function showTrendPointTooltip(evt, c) {
   container.addEventListener('pointerout', offPoint);
   container.addEventListener('focusin', onPoint);
   container.addEventListener('focusout', offPoint);
+}
+
+function hourlySegmentFromEvent(evt) {
+  if (!hourlyChartState || !evt.target || !evt.target.closest) return null;
+  return evt.target.closest('rect.hourly-segment');
+}
+
+function showHourlyTooltip(evt, segment) {
+  const hour = Number(segment.getAttribute('data-hour'));
+  const key = hourlyChartState.keys[Number(segment.getAttribute('data-key-idx'))];
+  const value = hourlyChartState.byHourSeries[hour][key] || 0;
+  const total = hourlyChartState.hourTotals[hour];
+  const nextHour = (hour + 1) % 24;
+  showTooltip(
+    evt,
+    `<b>${escapeHtml(key)}</b><br>${String(hour).padStart(2, '0')}:00–${String(nextHour).padStart(2, '0')}:00` +
+      `<br>${fmtKo(value)} 토큰 (시간대 합계 ${fmtKo(total)})`,
+  );
+}
+
+{
+  const container = document.getElementById('hourlyChart');
+  const onSegment = evt => {
+    const segment = hourlySegmentFromEvent(evt);
+    if (segment) showHourlyTooltip(evt, segment);
+  };
+  const offSegment = evt => {
+    if (hourlySegmentFromEvent(evt)) hideTooltip();
+  };
+  container.addEventListener('pointerover', onSegment);
+  container.addEventListener('pointermove', onSegment);
+  container.addEventListener('pointerout', offSegment);
+  container.addEventListener('focusin', onSegment);
+  container.addEventListener('focusout', offSegment);
 }
 
 function modelSliceFromEvent(evt) {
@@ -191,6 +226,79 @@ export function renderTrendChart(rows) {
     const item = document.createElement('div');
     item.className = 'legend-item';
     item.append(swatch(color), document.createTextNode(k));
+    fragment.appendChild(item);
+  });
+  legend.replaceChildren(fragment);
+}
+
+export function renderHourlyChart(rows) {
+  const container = document.getElementById('hourlyChart');
+  const legend = document.getElementById('hourlyLegend');
+  container.replaceChildren();
+  legend.replaceChildren();
+  if (rows.length === 0) {
+    hourlyChartState = null;
+    container.replaceChildren(emptyNote('데이터가 없습니다.'));
+    return;
+  }
+
+  const hours = Array.from({ length: 24 }, (_, i) => i);
+  const keys = [...new Set(rows.map(seriesKey))].sort();
+  const byHourSeries = hours.map(() => ({}));
+  for (const row of rows) {
+    const date = new Date(row.hour);
+    if (Number.isNaN(date.getTime())) continue;
+    const hour = date.getHours();
+    const key = seriesKey(row);
+    byHourSeries[hour][key] = (byHourSeries[hour][key] || 0) + row.total_tokens;
+  }
+  const hourTotals = byHourSeries.map(values =>
+    Object.values(values).reduce((sum, value) => sum + value, 0)
+  );
+  const maxVal = Math.max(1, ...hourTotals);
+  hourlyChartState = { keys, byHourSeries, hourTotals };
+
+  const width = 720, height = 260;
+  const padL = 56, padR = 16, padT = 12, padB = 28;
+  const plotW = width - padL - padR, plotH = height - padT - padB;
+  const band = plotW / 24, barW = Math.max(4, band - 5);
+  const yFor = value => padT + plotH - (value / maxVal) * plotH;
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+  const chartTitle = `시간대별 토큰 사용량 (${timeZone}, ${keys.length}개 시리즈)`;
+  let svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="display:block" role="img" aria-label="${escapeHtml(chartTitle)}"><title>${escapeHtml(chartTitle)}</title>`;
+
+  for (let i = 0; i <= 4; i++) {
+    const value = (maxVal / 4) * i;
+    const y = yFor(value);
+    svg += `<line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="var(--grid-line)" stroke-width="1"/>`;
+    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${fmtKo(value)}</text>`;
+  }
+
+  hours.forEach(hour => {
+    const x = padL + hour * band + (band - barW) / 2;
+    let cumulative = 0;
+    keys.forEach((key, keyIdx) => {
+      const value = byHourSeries[hour][key] || 0;
+      if (value <= 0) return;
+      const bottom = yFor(cumulative);
+      cumulative += value;
+      const top = yFor(cumulative);
+      const label = `${key} — ${String(hour).padStart(2, '0')}:00: ${fmtKo(value)} 토큰`;
+      svg += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, bottom - top).toFixed(1)}" ` +
+        `fill="${colorFor(key, keys)}" class="hourly-segment" tabindex="0" data-hour="${hour}" data-key-idx="${keyIdx}" aria-label="${escapeHtml(label)}"><title>${escapeHtml(label)}</title></rect>`;
+    });
+    if (hour % 2 === 0) {
+      svg += `<text x="${(x + barW / 2).toFixed(1)}" y="${height - 8}" text-anchor="middle">${String(hour).padStart(2, '0')}</text>`;
+    }
+  });
+  svg += '</svg>';
+  container.innerHTML = svg;
+
+  const fragment = document.createDocumentFragment();
+  keys.forEach(key => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.append(swatch(colorFor(key, keys)), document.createTextNode(key));
     fragment.appendChild(item);
   });
   legend.replaceChildren(fragment);

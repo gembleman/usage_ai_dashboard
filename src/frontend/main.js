@@ -50,8 +50,9 @@ async function loadAll() {
     console.warn('대시보드 설정을 불러오지 못했습니다:', e);
   }
 
-  const [usageResult, rateLimitsResult] = await Promise.allSettled([
+  const [usageResult, hourlyResult, rateLimitsResult] = await Promise.allSettled([
     fetchJson('/api/usage'),
+    fetchJson('/api/usage/hourly'),
     fetchJson('/api/rate_limits'),
   ]);
 
@@ -59,9 +60,16 @@ async function loadAll() {
     const usage = usageResult.value;
     // renderGlobalFilteredPanels가 전역 기간 필터 파이프라인을 통해 상세 내역 테이블까지
     // 함께 그리므로 renderUsageTable을 따로 호출하지 않는다(중복/덮어쓰기 방지).
-    renderGlobalFilteredPanels(usage);
+    renderGlobalFilteredPanels(usage, hourlyResult.status === 'fulfilled' ? hourlyResult.value : []);
   } else {
+    // 시간대 API가 살아 있으면 해당 차트는 독립적으로 계속 표시한다.
+    renderGlobalFilteredPanels([], hourlyResult.status === 'fulfilled' ? hourlyResult.value : []);
     showUsagePanelErrors('사용량 데이터를 불러오지 못했습니다: ' + usageResult.reason.message);
+  }
+
+  if (hourlyResult.status === 'rejected') {
+    showPanelError('hourlyChart', '시간대별 사용량 데이터를 불러오지 못했습니다: ' + hourlyResult.reason.message);
+    document.getElementById('hourlyLegend').replaceChildren();
   }
 
   if (rateLimitsResult.status === 'fulfilled') {
@@ -70,10 +78,10 @@ async function loadAll() {
     showPanelError('rateLimits', '요청 한도 데이터를 불러오지 못했습니다: ' + rateLimitsResult.reason.message);
   }
 
-  const failures = [usageResult, rateLimitsResult].filter(r => r.status === 'rejected');
+  const failures = [usageResult, hourlyResult, rateLimitsResult].filter(r => r.status === 'rejected');
   if (failures.length === 0) {
     document.getElementById('status').textContent = `${fmtTime(Date.now())} 기준 업데이트됨`;
-  } else if (failures.length === 2) {
+  } else if (failures.length === 3) {
     document.getElementById('status').textContent = '데이터를 불러오지 못했습니다.';
   } else {
     document.getElementById('status').textContent = `일부 데이터를 불러오지 못했습니다 (${fmtTime(Date.now())} 기준 부분 업데이트).`;

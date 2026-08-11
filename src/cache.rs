@@ -18,7 +18,7 @@ use rusqlite::{Connection, params};
 use crate::model::{
     ExtraUsageSnapshot, RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord,
 };
-use crate::{AggKey, AggTotals};
+use crate::{AggKey, AggTotals, HourlyAggKey};
 
 /// Cache schema version, tracked via `PRAGMA user_version`.
 /// v1: codex rows store `input_tokens` excluding `cached_input_tokens`
@@ -191,8 +191,14 @@ impl Cache {
     /// this never materializes every transcript row in Rust memory.
     pub fn load_aggregate(
         &self,
-    ) -> rusqlite::Result<Option<(BTreeMap<AggKey, AggTotals>, Vec<RateLimitSnapshot>, usize)>>
-    {
+    ) -> rusqlite::Result<
+        Option<(
+            BTreeMap<AggKey, AggTotals>,
+            BTreeMap<HourlyAggKey, AggTotals>,
+            Vec<RateLimitSnapshot>,
+            usize,
+        )>,
+    > {
         let record_count: i64 =
             self.conn
                 .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))?;
@@ -234,8 +240,41 @@ impl Cache {
         let aggregate = rows.collect::<Result<BTreeMap<_, _>, _>>()?;
         drop(stmt);
 
+        let mut hourly_stmt = self.conn.prepare(
+            "SELECT source, account, substr(timestamp, 1, 13) || ':00:00Z',
+                    SUM(input_tokens), SUM(cached_input_tokens),
+                    SUM(cache_creation_input_tokens), SUM(output_tokens),
+                    SUM(reasoning_output_tokens), SUM(total_tokens), COUNT(*),
+                    SUM(cost_usd)
+             FROM usage_records
+             WHERE COALESCE(model, 'unknown') != '<synthetic>'
+             GROUP BY source, account, substr(timestamp, 1, 13)",
+        )?;
+        let hourly_rows = hourly_stmt.query_map([], |row| {
+            let source: String = row.get(0)?;
+            let key = (
+                Source::from_str(&source).unwrap_or(Source::Codex),
+                row.get(1)?,
+                row.get(2)?,
+            );
+            let totals = AggTotals {
+                input_tokens: row.get::<_, i64>(3)? as u64,
+                cached_input_tokens: row.get::<_, i64>(4)? as u64,
+                cache_creation_input_tokens: row.get::<_, i64>(5)? as u64,
+                output_tokens: row.get::<_, i64>(6)? as u64,
+                reasoning_output_tokens: row.get::<_, i64>(7)? as u64,
+                total_tokens: row.get::<_, i64>(8)? as u64,
+                count: row.get::<_, i64>(9)? as u64,
+                cost_usd: row.get(10)?,
+            };
+            Ok((key, totals))
+        })?;
+        let hourly = hourly_rows.collect::<Result<BTreeMap<_, _>, _>>()?;
+        drop(hourly_stmt);
+
         Ok(Some((
             aggregate,
+            hourly,
             self.load_rate_limits()?,
             record_count as usize,
         )))
@@ -689,7 +728,7 @@ mod tests {
             .save(&[pi_a, pi_b, record(Source::Codex, "user01", 1, 10)], &[])
             .unwrap();
 
-        let (agg, _, _) = cache.load_aggregate().unwrap().unwrap();
+        let (agg, _, _, _) = cache.load_aggregate().unwrap().unwrap();
         let pi = agg
             .iter()
             .find(|((source, ..), _)| *source == Source::Pi)

@@ -18,6 +18,8 @@ use crate::model::{RateLimitSnapshot, Source, UsageRecord};
 
 /// Aggregation key: source, account, date (YYYY-MM-DD), model.
 pub type AggKey = (Source, String, String, String);
+/// Hourly aggregation key: source, account, UTC hour (RFC 3339).
+pub type HourlyAggKey = (Source, String, String);
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AggTotals {
@@ -79,6 +81,32 @@ pub fn aggregate(records: &[UsageRecord]) -> BTreeMap<AggKey, AggTotals> {
         let model = r.model.clone().unwrap_or_else(|| "unknown".to_string());
         let key = (r.source, r.account.clone(), date, model);
         let entry = map.entry(key).or_default();
+        entry.input_tokens += r.input_tokens;
+        entry.cached_input_tokens += r.cached_input_tokens;
+        entry.cache_creation_input_tokens += r.cache_creation_input_tokens;
+        entry.output_tokens += r.output_tokens;
+        entry.reasoning_output_tokens += r.reasoning_output_tokens;
+        entry.total_tokens += r.total_tokens;
+        entry.count += 1;
+        if let Some(cost) = r.cost_usd {
+            *entry.cost_usd.get_or_insert(0.0) += cost;
+        }
+    }
+    map
+}
+
+/// Aggregate records by UTC hour while keeping source/account series separate.
+/// The browser converts each bucket to its local time zone before rendering.
+pub fn aggregate_hourly(records: &[UsageRecord]) -> BTreeMap<HourlyAggKey, AggTotals> {
+    let mut map: BTreeMap<HourlyAggKey, AggTotals> = BTreeMap::new();
+    for r in records {
+        // Synthetic Claude rows represent failed/empty turns and are omitted
+        // from every dashboard usage panel.
+        if r.model.as_deref() == Some("<synthetic>") {
+            continue;
+        }
+        let hour = r.timestamp.format("%Y-%m-%dT%H:00:00Z").to_string();
+        let entry = map.entry((r.source, r.account.clone(), hour)).or_default();
         entry.input_tokens += r.input_tokens;
         entry.cached_input_tokens += r.cached_input_tokens;
         entry.cache_creation_input_tokens += r.cache_creation_input_tokens;
@@ -312,7 +340,8 @@ pub fn parse_all(
     for (account, (result, snapshot)) in codex_accounts.iter().zip(codex_results) {
         per_account.push((format!("codex/{}", account.name), result.records.len()));
         all_records.extend(result.records);
-        if let Some(snap) = codex::merge_rate_limit_snapshots(result.rate_limit_snapshot, snapshot) {
+        if let Some(snap) = codex::merge_rate_limit_snapshots(result.rate_limit_snapshot, snapshot)
+        {
             rate_limit_snapshots.push(snap);
         }
     }

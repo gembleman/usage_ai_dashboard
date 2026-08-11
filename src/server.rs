@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::model::{RateLimitSnapshot, Source, UsageRecord};
-use crate::{AggKey, AggTotals, aggregate, parse_all};
+use crate::{AggKey, AggTotals, HourlyAggKey, aggregate, aggregate_hourly, parse_all};
 
 const CSS_CONTENT_TYPE: &str = "text/css; charset=utf-8";
 const JS_CONTENT_TYPE: &str = "text/javascript; charset=utf-8";
@@ -58,6 +58,8 @@ struct AppData {
     /// instead of on every request; `Bytes` clones are refcounted, so request
     /// handlers hold the read lock only long enough to bump a refcount.
     usage_json: Bytes,
+    /// Pre-serialized /api/usage/hourly body, grouped by UTC hour.
+    hourly_usage_json: Bytes,
     /// Pre-serialized /api/rate_limits body, same lifecycle as `usage_json`.
     rate_limits_json: Bytes,
     /// Model prices loaded from config.toml.
@@ -86,6 +88,14 @@ struct AggRow {
     /// Cost the CLI itself reported (pi). Null for sources that report none,
     /// which the frontend then estimates from the pricing table.
     cost_usd: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct HourlyAggRow {
+    source: String,
+    account: String,
+    hour: String,
+    total_tokens: u64,
 }
 
 fn agg_totals_to_row(
@@ -122,6 +132,23 @@ fn build_usage_json(records: &[UsageRecord]) -> Bytes {
     build_aggregate_json(&agg)
 }
 
+fn build_hourly_usage_json(records: &[UsageRecord]) -> Bytes {
+    build_hourly_aggregate_json(&aggregate_hourly(records))
+}
+
+fn build_hourly_aggregate_json(agg: &std::collections::BTreeMap<HourlyAggKey, AggTotals>) -> Bytes {
+    let rows: Vec<HourlyAggRow> = agg
+        .iter()
+        .map(|((source, account, hour), totals)| HourlyAggRow {
+            source: source.to_string(),
+            account: account.clone(),
+            hour: hour.clone(),
+            total_tokens: totals.total_tokens,
+        })
+        .collect();
+    to_json_bytes(&rows)
+}
+
 fn build_aggregate_json(agg: &std::collections::BTreeMap<AggKey, AggTotals>) -> Bytes {
     let rows: Vec<AggRow> = agg
         .iter()
@@ -138,6 +165,15 @@ const JSON_CONTENT_TYPE: &str = "application/json";
 /// precomputed at startup / refresh.
 async fn get_usage(State(state): State<SharedState>) -> impl IntoResponse {
     let body = state.read().unwrap().usage_json.clone();
+    (
+        [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
+        body,
+    )
+}
+
+/// GET /api/usage/hourly - source x account x UTC-hour token totals.
+async fn get_hourly_usage(State(state): State<SharedState>) -> impl IntoResponse {
+    let body = state.read().unwrap().hourly_usage_json.clone();
     (
         [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
         body,
@@ -184,9 +220,10 @@ struct RefreshResponse {
     rate_limit_count: usize,
 }
 
-type RefreshPayload = (Bytes, Bytes, usize, usize);
+type RefreshPayload = (Bytes, Bytes, Bytes, usize, usize);
 type CachedAggregate = (
     std::collections::BTreeMap<AggKey, AggTotals>,
+    std::collections::BTreeMap<HourlyAggKey, AggTotals>,
     Vec<RateLimitSnapshot>,
     usize,
 );
@@ -197,14 +234,16 @@ fn build_refresh_payload(
     cached: Option<CachedAggregate>,
 ) -> RefreshPayload {
     match cached {
-        Some((agg, rate_limits, record_count)) => (
+        Some((agg, hourly, rate_limits, record_count)) => (
             build_aggregate_json(&agg),
+            build_hourly_aggregate_json(&hourly),
             to_json_bytes(&rate_limits),
             record_count,
             rate_limits.len(),
         ),
         None => (
             build_usage_json(records),
+            build_hourly_usage_json(records),
             to_json_bytes(fresh_rate_limits),
             records.len(),
             fresh_rate_limits.len(),
@@ -224,7 +263,7 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
     // parse_all is synchronous and I/O-heavy; run it (and the JSON
     // re-serialization) off the async runtime.
     let cache_path = config.cache_path().to_path_buf();
-    let (usage_json, rate_limits_json, record_count, rate_limit_count) =
+    let (usage_json, hourly_usage_json, rate_limits_json, record_count, rate_limit_count) =
         tokio::task::spawn_blocking(move || {
             let (records, rate_limits, _summary) = parse_all(&config, include_dormant_claude);
             let merged = match Cache::open(&cache_path) {
@@ -249,6 +288,7 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
 
     let mut data = state.write().unwrap();
     data.usage_json = usage_json;
+    data.hourly_usage_json = hourly_usage_json;
     data.rate_limits_json = rate_limits_json;
 
     (
@@ -265,15 +305,53 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
 mod tests {
     use super::*;
 
+    fn usage_record(timestamp: &str, model: &str, total_tokens: u64) -> UsageRecord {
+        UsageRecord {
+            source: Source::Codex,
+            account: "user01".to_string(),
+            timestamp: timestamp.parse().unwrap(),
+            model: Some(model.to_string()),
+            cost_usd: None,
+            input_tokens: total_tokens,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens,
+            is_subagent: false,
+        }
+    }
+
     #[test]
     fn empty_refresh_without_cached_aggregate_returns_empty_json() {
-        let (usage, rate_limits, record_count, rate_limit_count) =
+        let (usage, hourly, rate_limits, record_count, rate_limit_count) =
             build_refresh_payload(&[], &[], None);
 
         assert_eq!(usage.as_ref(), b"[]");
+        assert_eq!(hourly.as_ref(), b"[]");
         assert_eq!(rate_limits.as_ref(), b"[]");
         assert_eq!(record_count, 0);
         assert_eq!(rate_limit_count, 0);
+    }
+
+    #[test]
+    fn hourly_usage_groups_utc_hours_and_omits_synthetic_rows() {
+        let records = [
+            usage_record("2026-08-11T01:05:00Z", "gpt-5", 10),
+            usage_record("2026-08-11T01:59:59Z", "gpt-5", 20),
+            usage_record("2026-08-11T02:00:00Z", "gpt-5", 7),
+            usage_record("2026-08-11T02:30:00Z", "<synthetic>", 99),
+        ];
+
+        let body = build_hourly_usage_json(&records);
+        let rows: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rows = rows.as_array().unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["hour"], "2026-08-11T01:00:00Z");
+        assert_eq!(rows[0]["total_tokens"], 30);
+        assert_eq!(rows[1]["hour"], "2026-08-11T02:00:00Z");
+        assert_eq!(rows[1]["total_tokens"], 7);
     }
 }
 
@@ -314,14 +392,18 @@ pub fn run(config: Config, include_dormant_claude: bool) {
         .ok()
         .and_then(|c| c.load_aggregate().ok().flatten());
 
-    let (usage_json, rate_limits) = match cached {
-        Some((agg, rate_limits, record_count)) => {
+    let (usage_json, hourly_usage_json, rate_limits) = match cached {
+        Some((agg, hourly, rate_limits, record_count)) => {
             println!(
                 "Loaded {} cached records from {} (click 데이터 새로고침 to re-parse).",
                 record_count,
                 cache_path.display()
             );
-            (build_aggregate_json(&agg), rate_limits)
+            (
+                build_aggregate_json(&agg),
+                build_hourly_aggregate_json(&hourly),
+                rate_limits,
+            )
         }
         None => {
             println!("No cache found; parsing accounts before starting server...");
@@ -332,7 +414,11 @@ pub fn run(config: Config, include_dormant_claude: bool) {
                     eprintln!("Warning: failed to write cache: {e}");
                 }
             }
-            (build_usage_json(&records), rate_limits)
+            (
+                build_usage_json(&records),
+                build_hourly_usage_json(&records),
+                rate_limits,
+            )
         }
     };
 
@@ -344,6 +430,7 @@ pub fn run(config: Config, include_dormant_claude: bool) {
     });
     let state: SharedState = Arc::new(RwLock::new(AppData {
         usage_json,
+        hourly_usage_json,
         rate_limits_json: to_json_bytes(&rate_limits),
         pricing_json: to_json_bytes(config.model_pricing()),
         settings_json,
@@ -361,6 +448,7 @@ pub fn run(config: Config, include_dormant_claude: bool) {
         .route("/js/rate-limits.js", get(get_rate_limits_js))
         .route("/js/main.js", get(get_main_js))
         .route("/api/usage", get(get_usage))
+        .route("/api/usage/hourly", get(get_hourly_usage))
         .route("/api/rate_limits", get(get_rate_limits))
         .route("/api/pricing", get(get_pricing))
         .route("/api/settings", get(get_settings))

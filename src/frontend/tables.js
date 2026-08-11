@@ -7,12 +7,12 @@ import {
   rowCostUsd,
   updateWithViewTransition,
 } from './util.js';
-import { renderModelChart, renderTrendChart, setModelChartMaxItems } from './charts.js';
+import { renderHourlyChart, renderModelChart, renderTrendChart, setModelChartMaxItems } from './charts.js';
 
 const ACCOUNT_RANGE_DAYS = { '1d': 1, '7d': 7, '30d': 30, '365d': 365, all: null };
 
 // 대시보드 전역 기간 필터 상태. 트렌드 차트/계정별 합계/모델별 분포가 모두 이 값을 참조한다.
-let globalRangeState = { range: 'all', rawRows: [] };
+let globalRangeState = { range: 'all', rawRows: [], rawHourlyRows: [] };
 
 // 기준 날짜(가장 최근 데이터 날짜)로부터 range일 이내의 레코드만 남긴다.
 function filterUsageRowsByRange(usageRows, range) {
@@ -25,9 +25,27 @@ function filterUsageRowsByRange(usageRows, range) {
 
 // 원본 usage 데이터를 저장하고, 현재 선택된 전역 기간으로 필터링해
 // 트렌드 차트 / 계정별 합계 / 모델별 분포를 다시 그린다.
-export function renderGlobalFilteredPanels(usageRows) {
+export function renderGlobalFilteredPanels(usageRows, hourlyRows = []) {
   globalRangeState.rawRows = usageRows || [];
+  globalRangeState.rawHourlyRows = hourlyRows || [];
   applyGlobalRangeFilter();
+}
+
+function localDateForHour(hour) {
+  const d = new Date(hour);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = value => String(value).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function filterHourlyRowsByRange(rows, range) {
+  const days = ACCOUNT_RANGE_DAYS[range];
+  if (!days || rows.length === 0) return rows;
+  const dated = rows.map(row => ({ row, date: localDateForHour(row.hour) })).filter(x => x.date);
+  if (dated.length === 0) return [];
+  const latest = dated.reduce((max, x) => x.date > max ? x.date : max, dated[0].date);
+  const cutoff = Temporal.PlainDate.from(latest).subtract({ days: days - 1 }).toString();
+  return dated.filter(x => x.date >= cutoff).map(x => x.row);
 }
 
 export function setGlobalRange(range) {
@@ -49,6 +67,7 @@ function applyGlobalRangeFilter() {
   const filtered = ranged.filter(r => r.model !== '<synthetic>');
   renderAccountTable(filtered);
   renderTrendChart(filtered);
+  renderHourlyChart(filterHourlyRowsByRange(globalRangeState.rawHourlyRows, globalRangeState.range));
   renderModelChart(filtered);
   // 상세 내역 테이블도 전역 기간 필터를 따른다. renderUsageTable은 raw만 교체하고
   // 기존 source/account/model 선택은 usageTableState와 옵션 갱신 함수가 보존한다
