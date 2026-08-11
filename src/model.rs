@@ -1,4 +1,5 @@
-//! Common normalized types shared between the Codex and Claude Code parsers.
+//! Common normalized types shared between the Codex, Claude Code, pi, and OpenCode
+//! parsers.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -9,6 +10,8 @@ use serde::Serialize;
 pub enum Source {
     Codex,
     ClaudeCode,
+    Pi,
+    OpenCode,
 }
 
 impl std::fmt::Display for Source {
@@ -16,6 +19,8 @@ impl std::fmt::Display for Source {
         match self {
             Source::Codex => write!(f, "codex"),
             Source::ClaudeCode => write!(f, "claude_code"),
+            Source::Pi => write!(f, "pi"),
+            Source::OpenCode => write!(f, "opencode"),
         }
     }
 }
@@ -27,13 +32,15 @@ impl std::str::FromStr for Source {
         match s {
             "codex" => Ok(Source::Codex),
             "claude_code" => Ok(Source::ClaudeCode),
+            "pi" => Ok(Source::Pi),
+            "opencode" => Ok(Source::OpenCode),
             other => Err(format!("unknown source: {other}")),
         }
     }
 }
 
 /// A single normalized usage record: one turn (Codex) or one assistant
-/// message (Claude Code), already de-duplicated / delta-resolved by the
+/// message (Claude Code / pi / OpenCode), already de-duplicated / delta-resolved by the
 /// source-specific parser.
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageRecord {
@@ -41,6 +48,12 @@ pub struct UsageRecord {
     pub account: String,
     pub timestamp: DateTime<Utc>,
     pub model: Option<String>,
+    /// Cost in USD as reported by the CLI itself, when it records one.
+    /// pi and OpenCode do — they bill through providers whose prices
+    /// `config.toml`'s `model_pricing` does not (and should not have to)
+    /// track. `None` for Codex and Claude Code, whose cost the dashboard
+    /// estimates from `model_pricing` instead.
+    pub cost_usd: Option<f64>,
     pub input_tokens: u64,
     /// Cache *read* input tokens (billed at ~0.1x the base input rate).
     /// Named for backwards compatibility with the DB column that once held
@@ -52,7 +65,7 @@ pub struct UsageRecord {
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
-    /// Only meaningful for Claude Code; false for Codex.
+    /// Only meaningful for Claude Code; false for other sources.
     pub is_subagent: bool,
 }
 

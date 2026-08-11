@@ -9,7 +9,7 @@
 <body>
 
 <h1>AI 사용량 대시보드</h1>
-<div class="subtitle">Codex 및 Claude Code 로컬 세션 사용량을 계정 / 날짜 / 모델별로 집계합니다.</div>
+<div class="subtitle">Codex, Claude Code, pi 및 OpenCode 로컬 세션 사용량을 계정 / 날짜 / 모델별로 집계합니다.</div>
 
 <div class="toolbar">
   <button id="refreshBtn">데이터 새로고침</button>
@@ -71,6 +71,8 @@
     <button class="tab-btn active" data-source="all" role="tab" aria-selected="true">전체</button>
     <button class="tab-btn" data-source="codex" role="tab" aria-selected="false">Codex</button>
     <button class="tab-btn" data-source="claude_code" role="tab" aria-selected="false">Claude Code</button>
+    <button class="tab-btn" data-source="pi" role="tab" aria-selected="false">pi</button>
+    <button class="tab-btn" data-source="opencode" role="tab" aria-selected="false">OpenCode</button>
   </div>
   <div class="filter-row">
     <label for="accountSelect">계정:</label>

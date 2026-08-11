@@ -190,6 +190,8 @@ fn parse_file(path: &Path, account: &str, is_subagent_file: bool, records: &mut 
             account: account.to_string(),
             timestamp,
             model: message.model.clone(),
+            // Claude Code logs no cost; it is estimated from model_pricing.
+            cost_usd: None,
             input_tokens: usage.input_tokens,
             // Keep creation and read separate — they bill at very different
             // rates (creation ~1.25x base, read ~0.1x base), so merging them

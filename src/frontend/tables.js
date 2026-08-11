@@ -1,10 +1,10 @@
 import {
   SOURCE_LABELS,
   emptyTableRow,
-  estimateCostUsd,
   fmt,
   fmtKo,
   fmtUsd,
+  rowCostUsd,
   updateWithViewTransition,
 } from './util.js';
 import { renderModelChart, renderTrendChart, setModelChartMaxItems } from './charts.js';
@@ -69,7 +69,7 @@ function aggregateAccountRows(usageRows) {
         g.output_tokens += r.output_tokens;
         g.total_tokens += r.total_tokens;
         g.turns += r.turns;
-        const c = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
+        const c = rowCostUsd(r);
         if (c != null) { g.cost += c; g.hasCost = true; }
       }
       return g;
@@ -87,7 +87,7 @@ function sumUsageGroup(group) {
     g.output_tokens += r.output_tokens;
     g.total_tokens += r.total_tokens;
     g.turns += r.turns;
-    const c = estimateCostUsd(r.model, r.input_tokens, r.cached_input_tokens, r.cache_creation_input_tokens, r.output_tokens);
+    const c = rowCostUsd(r);
     if (c != null) { g.cost += c; g.hasCost = true; }
   }
   return g;

@@ -3,6 +3,8 @@ mod claude_code;
 mod codex;
 mod config;
 mod model;
+mod opencode;
+mod pi;
 mod server;
 #[cfg(test)]
 mod test_util;
@@ -26,6 +28,11 @@ pub struct AggTotals {
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
     pub count: u64,
+    /// Sum of the costs the CLI reported for these records, if any of them
+    /// carried one (pi / OpenCode). `None` means "nothing reported a cost" — the
+    /// dashboard then estimates it from `model_pricing`, as it always has
+    /// for Codex and Claude Code.
+    pub cost_usd: Option<f64>,
 }
 
 impl AggTotals {
@@ -38,6 +45,9 @@ impl AggTotals {
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
         self.count += other.count;
+        if let Some(cost) = other.cost_usd {
+            *self.cost_usd.get_or_insert(0.0) += cost;
+        }
     }
 }
 
@@ -76,6 +86,9 @@ pub fn aggregate(records: &[UsageRecord]) -> BTreeMap<AggKey, AggTotals> {
         entry.reasoning_output_tokens += r.reasoning_output_tokens;
         entry.total_tokens += r.total_tokens;
         entry.count += 1;
+        if let Some(cost) = r.cost_usd {
+            *entry.cost_usd.get_or_insert(0.0) += cost;
+        }
     }
     map
 }
@@ -216,7 +229,7 @@ pub struct ParseSummary {
     pub total_records: usize,
 }
 
-/// Parse all configured Codex + Claude Code accounts and return the raw
+/// Parse all configured Codex + Claude Code + pi + OpenCode accounts and return the raw
 /// records plus any Codex rate limit snapshots and a summary. Does no
 /// stdout output — the CLI prints the summary, the server ignores it.
 /// Shared by the console path and the web server (both initial load and
@@ -227,12 +240,14 @@ pub fn parse_all(
 ) -> (Vec<UsageRecord>, Vec<RateLimitSnapshot>, ParseSummary) {
     let codex_accounts = config.codex_accounts(include_dormant_claude);
     let claude_accounts = config.claude_accounts(include_dormant_claude);
+    let pi_accounts = config.pi_accounts(include_dormant_claude);
+    let opencode_accounts = config.opencode_accounts(include_dormant_claude);
 
     // Accounts are independent of each other, so parse each on its own
     // thread. This matters most for Claude Code, where the rate-limit fetch
     // is a blocking HTTP call that would otherwise serialize
     // per account. Joining in spawn order keeps the summary deterministic.
-    let (codex_results, claude_results) = std::thread::scope(|s| {
+    let (codex_results, claude_results, pi_results, opencode_results) = std::thread::scope(|s| {
         let codex_handles: Vec<_> = codex_accounts
             .iter()
             .map(|account| {
@@ -260,6 +275,16 @@ pub fn parse_all(
                 })
             })
             .collect();
+        // pi keeps no rate-limit or quota data in its logs, so this is a
+        // plain parse with no accompanying fetch.
+        let pi_handles: Vec<_> = pi_accounts
+            .iter()
+            .map(|account| s.spawn(move || pi::parse_account(account)))
+            .collect();
+        let opencode_handles: Vec<_> = opencode_accounts
+            .iter()
+            .map(|account| s.spawn(move || opencode::parse_account(account)))
+            .collect();
         (
             codex_handles
                 .into_iter()
@@ -268,6 +293,14 @@ pub fn parse_all(
             claude_handles
                 .into_iter()
                 .map(|h| h.join().expect("claude parse thread panicked"))
+                .collect::<Vec<_>>(),
+            pi_handles
+                .into_iter()
+                .map(|h| h.join().expect("pi parse thread panicked"))
+                .collect::<Vec<_>>(),
+            opencode_handles
+                .into_iter()
+                .map(|h| h.join().expect("opencode parse thread panicked"))
                 .collect::<Vec<_>>(),
         )
     });
@@ -293,6 +326,16 @@ pub fn parse_all(
         if let Some(snap) = snapshot {
             rate_limit_snapshots.push(snap);
         }
+    }
+
+    for (account, result) in pi_accounts.iter().zip(pi_results) {
+        per_account.push((format!("pi/{}", account.name), result.records.len()));
+        all_records.extend(result.records);
+    }
+
+    for (account, result) in opencode_accounts.iter().zip(opencode_results) {
+        per_account.push((format!("opencode/{}", account.name), result.records.len()));
+        all_records.extend(result.records);
     }
 
     let summary = ParseSummary {

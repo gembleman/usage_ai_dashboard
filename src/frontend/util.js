@@ -14,11 +14,13 @@ export const fmt = n => NUMBER_FORMAT.format(n);
 export const fmtTime = value => KO_TIME_FORMAT.format(value instanceof Date ? value : new Date(value));
 export const fmtDateTime = value => KO_DATE_TIME_FORMAT.format(value instanceof Date ? value : new Date(value));
 
-// Human-readable source labels. Codex and Claude Code accounts can share a
+// Human-readable source labels. Accounts from different CLIs can share a
 // display name (e.g. "user01"), so the source badge disambiguates them.
 export const SOURCE_LABELS = {
   codex: 'Codex',
   claude_code: 'Claude Code',
+  pi: 'pi',
+  opencode: 'OpenCode',
 };
 
 // innerHTML에 삽입하기 전에 사용자/로그 기반 문자열(계정명, 모델명 등)을 이스케이프한다.
@@ -98,6 +100,21 @@ export function estimateCostUsd(model, inputTokens, cachedInputTokens, cacheCrea
   const cachedCreationCost = ((cacheCreationInputTokens || 0) / 1e6) * p.cache_creation_input;
   const outCost = (outputTokens / 1e6) * p.output;
   return inCost + cachedReadCost + cachedCreationCost + outCost;
+}
+
+// 집계 행 하나의 비용. pi/OpenCode처럼 CLI가 실제 청구액(cost_usd)을 기록하는 소스는
+// 그 값을 그대로 쓰고, 그렇지 않은 소스(Codex / Claude Code)만 가격표로 추정한다.
+// pi는 서드파티 provider를 거치므로 config.toml의 model_pricing에 없는 모델이
+// 대부분이라, 추정하면 비용이 0으로 누락된다.
+export function rowCostUsd(row) {
+  if (Number.isFinite(row.cost_usd)) return row.cost_usd;
+  return estimateCostUsd(
+    row.model,
+    row.input_tokens,
+    row.cached_input_tokens,
+    row.cache_creation_input_tokens,
+    row.output_tokens,
+  );
 }
 
 export const fmtUsd = v => !Number.isFinite(v) ? '—' : USD_FORMAT.format(v);

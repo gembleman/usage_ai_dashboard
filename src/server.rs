@@ -83,6 +83,9 @@ struct AggRow {
     reasoning_output_tokens: u64,
     total_tokens: u64,
     turns: u64,
+    /// Cost the CLI itself reported (pi). Null for sources that report none,
+    /// which the frontend then estimates from the pricing table.
+    cost_usd: Option<f64>,
 }
 
 fn agg_totals_to_row(
@@ -104,6 +107,7 @@ fn agg_totals_to_row(
         reasoning_output_tokens: totals.reasoning_output_tokens,
         total_tokens: totals.total_tokens,
         turns: totals.count,
+        cost_usd: totals.cost_usd,
     }
 }
 

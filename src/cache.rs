@@ -36,7 +36,11 @@ use crate::{AggKey, AggTotals};
 ///     Previously they were merged into `cached_input_tokens`, which
 ///     caused cost estimates to under-report by ~20% (creation bills
 ///     at 1.25x vs read at 0.1x base input rate).
-const SCHEMA_VERSION: i64 = 5;
+/// v6: `usage_records` gains a nullable `cost_usd` column holding the cost
+///     the CLI itself reported. Only pi populates it (it bills through
+///     third-party providers absent from `model_pricing`); Codex and
+///     Claude Code rows stay NULL and are estimated from prices as before.
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS usage_records (
@@ -50,7 +54,8 @@ const SCHEMA_SQL: &str = "
         output_tokens INTEGER NOT NULL,
         reasoning_output_tokens INTEGER NOT NULL,
         total_tokens INTEGER NOT NULL,
-        is_subagent INTEGER NOT NULL
+        is_subagent INTEGER NOT NULL,
+        cost_usd REAL
     );
     CREATE TABLE IF NOT EXISTS rate_limits (
         source TEXT NOT NULL DEFAULT 'codex',
@@ -143,6 +148,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         );
     }
+    if version < 6 {
+        // Costs reported by the CLI itself (pi only). Pre-v6 rows predate any
+        // pi parsing, so NULL — "no reported cost, estimate it" — is correct
+        // for all of them. Duplicate-column-tolerant like v2/v3/v5.
+        let _ = conn.execute("ALTER TABLE usage_records ADD COLUMN cost_usd REAL", []);
+    }
     if version < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -193,7 +204,8 @@ impl Cache {
             "SELECT source, account, substr(timestamp, 1, 10), COALESCE(model, 'unknown'),
                     SUM(input_tokens), SUM(cached_input_tokens),
                     SUM(cache_creation_input_tokens), SUM(output_tokens),
-                    SUM(reasoning_output_tokens), SUM(total_tokens), COUNT(*)
+                    SUM(reasoning_output_tokens), SUM(total_tokens), COUNT(*),
+                    SUM(cost_usd)
              FROM usage_records
              GROUP BY source, account, substr(timestamp, 1, 10), COALESCE(model, 'unknown')",
         )?;
@@ -213,6 +225,9 @@ impl Cache {
                 reasoning_output_tokens: row.get::<_, i64>(8)? as u64,
                 total_tokens: row.get::<_, i64>(9)? as u64,
                 count: row.get::<_, i64>(10)? as u64,
+                // SUM() over an all-NULL group is NULL, so Codex/Claude Code
+                // groups (which never store a cost) come back as None.
+                cost_usd: row.get(11)?,
             };
             Ok((key, totals))
         })?;
@@ -323,8 +338,9 @@ impl Cache {
                 "INSERT INTO usage_records (
                     source, account, timestamp, model, input_tokens, cached_input_tokens,
                     cache_creation_input_tokens,
-                    output_tokens, reasoning_output_tokens, total_tokens, is_subagent
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    output_tokens, reasoning_output_tokens, total_tokens, is_subagent,
+                    cost_usd
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             for r in records {
                 stmt.execute(params![
@@ -339,6 +355,7 @@ impl Cache {
                     r.reasoning_output_tokens as i64,
                     r.total_tokens as i64,
                     r.is_subagent as i64,
+                    r.cost_usd,
                 ])?;
             }
         }
@@ -398,7 +415,8 @@ impl Cache {
         let mut stmt = self.conn.prepare(
             "SELECT source, account, timestamp, model, input_tokens, cached_input_tokens,
                     cache_creation_input_tokens,
-                    output_tokens, reasoning_output_tokens, total_tokens, is_subagent
+                    output_tokens, reasoning_output_tokens, total_tokens, is_subagent,
+                    cost_usd
              FROM usage_records",
         )?;
         let records = stmt
@@ -411,6 +429,7 @@ impl Cache {
                     account: row.get(1)?,
                     timestamp: parse_rfc3339(&timestamp),
                     model: row.get(3)?,
+                    cost_usd: row.get(11)?,
                     input_tokens: row.get::<_, i64>(4)? as u64,
                     cached_input_tokens: row.get::<_, i64>(5)? as u64,
                     cache_creation_input_tokens: row.get::<_, i64>(6)? as u64,
@@ -502,6 +521,7 @@ mod tests {
             account: account.to_string(),
             timestamp: Utc.with_ymd_and_hms(2026, 6, day, 12, 0, 0).unwrap(),
             model: None,
+            cost_usd: None,
             input_tokens,
             cached_input_tokens: 0,
             cache_creation_input_tokens: 0,
@@ -658,6 +678,35 @@ mod tests {
     }
 
     #[test]
+    fn aggregates_reported_cost_only_for_sources_that_log_one() {
+        let mut cache = open_mem();
+        let mut pi_a = record(Source::Pi, "user01", 1, 10);
+        pi_a.cost_usd = Some(0.25);
+        let mut pi_b = record(Source::Pi, "user01", 1, 10);
+        pi_b.cost_usd = Some(0.75);
+
+        cache
+            .save(&[pi_a, pi_b, record(Source::Codex, "user01", 1, 10)], &[])
+            .unwrap();
+
+        let (agg, _, _) = cache.load_aggregate().unwrap().unwrap();
+        let pi = agg
+            .iter()
+            .find(|((source, ..), _)| *source == Source::Pi)
+            .unwrap()
+            .1;
+        let codex = agg
+            .iter()
+            .find(|((source, ..), _)| *source == Source::Codex)
+            .unwrap()
+            .1;
+        assert_eq!(pi.cost_usd, Some(1.0));
+        // Codex logs no cost: SUM() over an all-NULL group stays NULL so the
+        // frontend falls back to estimating from model_pricing.
+        assert_eq!(codex.cost_usd, None);
+    }
+
+    #[test]
     fn migration_v4_normalizes_timestamps_for_string_comparison() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
@@ -666,7 +715,11 @@ mod tests {
         // "Z"-suffixed fixed-width format ('+' < '.') and would never be
         // deleted by save()'s replace window, duplicating history.
         conn.execute(
-            "INSERT INTO usage_records VALUES
+            "INSERT INTO usage_records (
+                source, account, timestamp, model, input_tokens, cached_input_tokens,
+                cache_creation_input_tokens, output_tokens, reasoning_output_tokens,
+                total_tokens, is_subagent
+             ) VALUES
                 ('codex', 'a', '2026-06-01T12:00:00+00:00', NULL, 10, 0, 0, 0, 0, 10, 0),
                 ('codex', 'a', '2026-06-20T08:30:00.123456+00:00', NULL, 20, 0, 0, 0, 0, 20, 0)",
             [],
@@ -709,7 +762,11 @@ mod tests {
         conn.execute_batch(SCHEMA_SQL).unwrap();
         // v0 rows: codex input_tokens included the cached portion.
         conn.execute(
-            "INSERT INTO usage_records VALUES
+            "INSERT INTO usage_records (
+                source, account, timestamp, model, input_tokens, cached_input_tokens,
+                cache_creation_input_tokens, output_tokens, reasoning_output_tokens,
+                total_tokens, is_subagent
+             ) VALUES
                 ('codex', 'a', '2026-06-01T00:00:00+00:00', NULL, 1000, 800, 0, 0, 0, 1000, 0),
                 ('claude_code', 'b', '2026-06-01T00:00:00+00:00', NULL, 1000, 800, 0, 0, 0, 1800, 0)",
             [],

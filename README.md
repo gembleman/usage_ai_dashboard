@@ -1,6 +1,6 @@
 # 코딩 AI 사용량 대시보드
 
-Codex 및 Claude Code 로컬 세션 사용량을 계정 / 날짜 / 모델별로 집계합니다.  
+Codex, Claude Code, pi 및 OpenCode 로컬 세션 사용량을 계정 / 날짜 / 모델별로 집계합니다.
 비슷한 게 이미 발에 차고 넘치지만, 그냥 만들었습니다.  
 
 ## 이용법
@@ -50,7 +50,40 @@ codex_home = "~/.codex"
 name = "user2"
 config_dir = "~/.claude"
 include_subagents = true
+
+[[pi_accounts]]
+name = "user3"
+pi_home = "~/.pi"
+
+[[opencode_accounts]]
+name = "user4"
+data_dir = "~/.local/share/opencode"
 ```
+
+### OpenCode 사용량에 대해
+
+OpenCode의 현재 SQLite 저장소(`opencode*.db`)와 예전 JSON 저장소
+(`storage/message/**/*.json`)를 모두 지원합니다. 업그레이드 뒤 두 형식에 같은
+메시지가 남아 있어도 메시지 ID로 중복 제거하며, 세션 포크가 새 ID로 복사한
+과거 호출도 원래 호출 시각과 사용량을 기준으로 한 번만 집계합니다.
+
+OpenCode가 메시지마다 기록한 비용을 그대로 사용하므로 OpenCode 모델을
+`model_pricing`에 추가할 필요가 없습니다. OpenCode도 로컬 로그에 요청 한도
+정보를 남기지 않으므로 한도 패널에는 표시되지 않습니다.
+
+### pi 사용량에 대해
+
+pi는 서드파티 provider(opencode-go 등)를 거치며, 세션 로그에 실제 청구액을
+직접 기록합니다. 따라서 pi 레코드의 비용은 `model_pricing` 표로 추정하지 않고
+로그에 기록된 값을 그대로 사용합니다. pi가 쓰는 모델(deepseek, glm, kimi 등)을
+`model_pricing`에 추가할 필요가 없습니다.
+
+pi는 세션을 재개하면 이전 대화를 새 세션 파일로 복사하므로, 같은 메시지가
+여러 파일에 중복 기록됩니다. 파서는 레코드 `id` 기준으로 계정 전체에 걸쳐
+중복을 제거합니다(그러지 않으면 실제 로그 기준 약 48% 과다 집계됩니다).
+
+pi는 로그에 요청 한도(rate limit) 정보를 남기지 않으므로 한도 패널에는
+표시되지 않습니다.
 
 ```
 ./usage_ai_dashboard.exe serve

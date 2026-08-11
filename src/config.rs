@@ -11,11 +11,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::claude_code::ClaudeAccount;
 use crate::codex::CodexAccount;
+use crate::opencode::OpenCodeAccount;
+use crate::pi::PiAccount;
 
 #[derive(Debug, Deserialize)]
 struct CodexAccountConfig {
     name: String,
     codex_home: String,
+    #[serde(default)]
+    dormant: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct PiAccountConfig {
+    name: String,
+    pi_home: String,
+    #[serde(default)]
+    dormant: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeAccountConfig {
+    name: String,
+    data_dir: String,
     #[serde(default)]
     dormant: bool,
 }
@@ -127,6 +145,10 @@ struct RawConfig {
     codex_accounts: Vec<CodexAccountConfig>,
     #[serde(default)]
     claude_accounts: Vec<ClaudeAccountConfig>,
+    #[serde(default)]
+    pi_accounts: Vec<PiAccountConfig>,
+    #[serde(default)]
+    opencode_accounts: Vec<OpenCodeAccountConfig>,
 }
 
 /// Fully-resolved account configuration.
@@ -140,6 +162,8 @@ pub struct Config {
     model_pricing: HashMap<String, ModelPricing>,
     codex: Vec<(CodexAccount, bool)>,
     claude: Vec<(ClaudeAccount, bool)>,
+    pi: Vec<(PiAccount, bool)>,
+    opencode: Vec<(OpenCodeAccount, bool)>,
     /// Directory the loaded `config.toml` lives in, if any. Used to place
     /// the cache DB alongside it.
     config_dir: Option<PathBuf>,
@@ -185,6 +209,24 @@ impl Config {
     /// Claude Code accounts, filtered by dormant flag.
     pub fn claude_accounts(&self, include_dormant: bool) -> Vec<ClaudeAccount> {
         self.claude
+            .iter()
+            .filter(|(_, dormant)| include_dormant || !dormant)
+            .map(|(a, _)| a.clone())
+            .collect()
+    }
+
+    /// pi accounts, filtered by dormant flag.
+    pub fn pi_accounts(&self, include_dormant: bool) -> Vec<PiAccount> {
+        self.pi
+            .iter()
+            .filter(|(_, dormant)| include_dormant || !dormant)
+            .map(|(a, _)| a.clone())
+            .collect()
+    }
+
+    /// OpenCode accounts, filtered by dormant flag.
+    pub fn opencode_accounts(&self, include_dormant: bool) -> Vec<OpenCodeAccount> {
+        self.opencode
             .iter()
             .filter(|(_, dormant)| include_dormant || !dormant)
             .map(|(a, _)| a.clone())
@@ -298,6 +340,34 @@ impl Config {
             })
             .collect();
 
+        let pi = raw
+            .pi_accounts
+            .into_iter()
+            .map(|c| {
+                (
+                    PiAccount {
+                        name: c.name,
+                        pi_home: expand_home(&c.pi_home),
+                    },
+                    c.dormant,
+                )
+            })
+            .collect();
+
+        let opencode = raw
+            .opencode_accounts
+            .into_iter()
+            .map(|c| {
+                (
+                    OpenCodeAccount {
+                        name: c.name,
+                        data_dir: expand_home(&c.data_dir),
+                    },
+                    c.dormant,
+                )
+            })
+            .collect();
+
         Ok(Config {
             server,
             dashboard: raw.dashboard,
@@ -307,6 +377,8 @@ impl Config {
             model_pricing: raw.model_pricing,
             codex,
             claude,
+            pi,
+            opencode,
             config_dir: path.parent().map(|p| p.to_path_buf()),
         })
     }

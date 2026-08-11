@@ -197,6 +197,8 @@ fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest
                         account: account.to_string(),
                         timestamp,
                         model: current_model.clone(),
+                        // Codex logs no cost; it is estimated from model_pricing.
+                        cost_usd: None,
                         input_tokens: non_cached_input,
                         cached_input_tokens: delta.cached_input_tokens,
                         // Codex has no cache-creation concept; its cache tokens
