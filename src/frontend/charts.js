@@ -287,8 +287,12 @@ export function renderHourlyChart(rows) {
   const maxVal = Math.max(1, ...hourTotals);
   hourlyChartState = { keys, byHourSeries, hourTotals };
 
-  const width = 720, height = 260;
-  const padL = 56, padR = 16, padT = 12, padB = 28;
+  const gridSteps = 4;
+  const yLabels = compactYAxisLabels(maxVal, gridSteps);
+  const defaultPadL = 56;
+  const padL = yAxisPadding(yLabels, defaultPadL);
+  const width = 720 + (padL - defaultPadL), height = 260;
+  const padR = 16, padT = 12, padB = 28;
   const plotW = width - padL - padR, plotH = height - padT - padB;
   const band = plotW / 24, barW = Math.max(4, band - 5);
   const yFor = value => padT + plotH - (value / maxVal) * plotH;
@@ -296,11 +300,11 @@ export function renderHourlyChart(rows) {
   const chartTitle = `시간대별 토큰 사용량 (${timeZone}, ${keys.length}개 시리즈)`;
   let svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="display:block" role="img" aria-label="${escapeHtml(chartTitle)}"><title>${escapeHtml(chartTitle)}</title>`;
 
-  for (let i = 0; i <= 4; i++) {
-    const value = (maxVal / 4) * i;
+  for (let i = 0; i <= gridSteps; i++) {
+    const value = (maxVal / gridSteps) * i;
     const y = yFor(value);
     svg += `<line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="var(--grid-line)" stroke-width="1"/>`;
-    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${fmtKo(value)}</text>`;
+    svg += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end">${yLabels[i]}</text>`;
   }
 
   hours.forEach(hour => {
