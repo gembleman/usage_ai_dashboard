@@ -3,10 +3,10 @@ import {
   colorFor,
   emptyNote,
   escapeHtml,
-  estimateCostUsd,
   fmtKo,
   fmtUsd,
   hideTooltip,
+  rowCostUsd,
   seriesKey,
   showTooltip,
   swatch,
@@ -23,13 +23,11 @@ export function setModelChartMaxItems(value) {
   if (Number.isInteger(value) && value >= 2) modelChartMaxItems = value;
 }
 
-// 모델 단위로 합산된 사용량의 비용. pi/OpenCode처럼 CLI가 실제 청구액을 기록하는 경우
-// 합산해 둔 reportedCost를 쓰고, 그 외에는 가격표로 추정한다. 이들이 쓰는
-// 서드파티 모델은 model_pricing에 없어 추정하면 비용이 통째로 누락된다.
-function modelCostUsd(model, u) {
+// 모델 단위로 합산된 비용. 각 행에서 실제 청구액 또는 가격표 추정액을 선택한 뒤
+// 합산하므로, 같은 모델을 Codex와 pi/OpenCode가 함께 사용해도 어느 한쪽이 누락되지 않는다.
+function modelCostUsd(u) {
   if (!u) return null;
-  if (u.hasReportedCost) return u.reportedCost;
-  return estimateCostUsd(model, u.input, u.cached, u.creation, u.output);
+  return u.hasCost ? u.cost : null;
 }
 
 // SVG y축 라벨이 길어질 때 필요한 왼쪽 여백을 실제 사용 글꼴로 계산한다.
@@ -350,30 +348,29 @@ export function renderModelChart(rows) {
 
   const byModelUsage = new Map();
   for (const [model, group] of Map.groupBy(rows, r => r.model)) {
-    // reportedCost는 CLI가 직접 기록한 실제 청구액(pi/OpenCode)의 합. 하나라도 있으면
-    // 그 모델은 추정 대신 이 값을 쓴다 (modelCostUsd 참조).
-    const u = { input: 0, cached: 0, creation: 0, output: 0, total: 0, reportedCost: 0, hasReportedCost: false };
+    const u = { input: 0, cached: 0, creation: 0, output: 0, total: 0, cost: 0, hasCost: false };
     for (const r of group) {
       u.total += r.total_tokens;
       u.input += r.input_tokens;
       u.cached += r.cached_input_tokens;
       u.creation += (r.cache_creation_input_tokens || 0);
       u.output += r.output_tokens;
-      if (Number.isFinite(r.cost_usd)) { u.reportedCost += r.cost_usd; u.hasReportedCost = true; }
+      const cost = rowCostUsd(r);
+      if (cost != null) { u.cost += cost; u.hasCost = true; }
     }
     byModelUsage.set(model, u);
   }
   const rawEntries = [...byModelUsage].map(([model, u]) => [model, u.total]).sort((a, b) => b[1] - a[1]);
   const totalTokens = rawEntries.reduce((s, [, v]) => s + v, 0);
   const total = totalTokens || 1;
-  const totalCost = [...byModelUsage.entries()].reduce((s, [m, u]) => s + (modelCostUsd(m, u) || 0), 0);
+  const totalCost = [...byModelUsage.values()].reduce((s, u) => s + (modelCostUsd(u) || 0), 0);
 
   // 설정된 최대 항목 수를 넘는 모델은 마지막 "기타" 항목으로 묶는다.
   const OTHER_LABEL = '기타';
   const main = [];
   let otherVal = 0;
   // "기타"는 여러 실모델의 묶음이라 findPricing('기타')가 실패한다. 개별 모델 비용을
-  // 여기서 미리 합산해 두고, 툴팁/범례에서 실시간 estimateCostUsd 대신 이 값을 쓴다.
+  // 여기서 미리 합산해 두고, 툴팁/범례에서 다시 계산하지 않고 이 값을 쓴다.
   const otherUsage = { input: 0, cached: 0, creation: 0, output: 0, cost: 0, hasCost: false };
   const keepCount = rawEntries.length > modelChartMaxItems ? modelChartMaxItems - 1 : rawEntries.length;
   for (const [index, [model, val]] of rawEntries.entries()) {
@@ -384,7 +381,7 @@ export function renderModelChart(rows) {
       otherUsage.cached += u.cached;
       otherUsage.creation += u.creation;
       otherUsage.output += u.output;
-      const c = modelCostUsd(model, u);
+      const c = modelCostUsd(u);
       if (c != null) { otherUsage.cost += c; otherUsage.hasCost = true; }
     } else {
       main.push([model, val]);
@@ -420,7 +417,7 @@ export function renderModelChart(rows) {
   // 실모델은 그대로 실시간 계산한다. 비용이 하나도 없으면 null → fmtUsd가 '—'로 표시한다.
   const costByModel = new Map(entries.map(([model]) => {
     if (model === OTHER_LABEL) return [model, otherUsage.hasCost ? otherUsage.cost : null];
-    return [model, modelCostUsd(model, byModelUsage.get(model))];
+    return [model, modelCostUsd(byModelUsage.get(model))];
   }));
   modelChartState = { entries, total, costByModel };
 
