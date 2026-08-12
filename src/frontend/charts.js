@@ -4,7 +4,7 @@ import {
   emptyNote,
   escapeHtml,
   fmtKo,
-  fmtUsd,
+  fmtUsdPartial,
   hideTooltip,
   rowCostUsd,
   seriesKey,
@@ -131,7 +131,8 @@ function showModelSliceTooltip(evt, s) {
   const i = Number(s.getAttribute('data-entry-idx'));
   const [model, val] = entries[i];
   const pct = ((val / total) * 100).toFixed(1);
-  showTooltip(evt, `<b>${escapeHtml(model)}</b><br>${fmtKo(val)} 토큰 (${pct}%)<br>예상 비용: ${fmtUsd(costByModel.get(model))}`);
+  const summary = costByModel.get(model);
+  showTooltip(evt, `<b>${escapeHtml(model)}</b><br>${fmtKo(val)} 토큰 (${pct}%)<br>예상 비용: ${fmtUsdPartial(summary.cost, summary.partial)}`);
 }
 
 {
@@ -348,7 +349,7 @@ export function renderModelChart(rows) {
 
   const byModelUsage = new Map();
   for (const [model, group] of Map.groupBy(rows, r => r.model)) {
-    const u = { input: 0, cached: 0, creation: 0, output: 0, total: 0, cost: 0, hasCost: false };
+    const u = { input: 0, cached: 0, creation: 0, output: 0, total: 0, cost: 0, hasCost: false, hasMissingCost: false };
     for (const r of group) {
       u.total += r.total_tokens;
       u.input += r.input_tokens;
@@ -357,6 +358,7 @@ export function renderModelChart(rows) {
       u.output += r.output_tokens;
       const cost = rowCostUsd(r);
       if (cost != null) { u.cost += cost; u.hasCost = true; }
+      else u.hasMissingCost = true;
     }
     byModelUsage.set(model, u);
   }
@@ -364,6 +366,8 @@ export function renderModelChart(rows) {
   const totalTokens = rawEntries.reduce((s, [, v]) => s + v, 0);
   const total = totalTokens || 1;
   const totalCost = [...byModelUsage.values()].reduce((s, u) => s + (modelCostUsd(u) || 0), 0);
+  const totalHasCost = [...byModelUsage.values()].some(u => u.hasCost);
+  const totalHasMissingCost = [...byModelUsage.values()].some(u => u.hasMissingCost);
 
   // 설정된 최대 항목 수를 넘는 모델은 마지막 "기타" 항목으로 묶는다.
   const OTHER_LABEL = '기타';
@@ -371,7 +375,7 @@ export function renderModelChart(rows) {
   let otherVal = 0;
   // "기타"는 여러 실모델의 묶음이라 findPricing('기타')가 실패한다. 개별 모델 비용을
   // 여기서 미리 합산해 두고, 툴팁/범례에서 다시 계산하지 않고 이 값을 쓴다.
-  const otherUsage = { input: 0, cached: 0, creation: 0, output: 0, cost: 0, hasCost: false };
+  const otherUsage = { input: 0, cached: 0, creation: 0, output: 0, cost: 0, hasCost: false, hasMissingCost: false };
   const keepCount = rawEntries.length > modelChartMaxItems ? modelChartMaxItems - 1 : rawEntries.length;
   for (const [index, [model, val]] of rawEntries.entries()) {
     if (index >= keepCount) {
@@ -383,6 +387,7 @@ export function renderModelChart(rows) {
       otherUsage.output += u.output;
       const c = modelCostUsd(u);
       if (c != null) { otherUsage.cost += c; otherUsage.hasCost = true; }
+      if (u.hasMissingCost) otherUsage.hasMissingCost = true;
     } else {
       main.push([model, val]);
     }
@@ -414,18 +419,22 @@ export function renderModelChart(rows) {
   container.innerHTML = svg;
 
   // "기타"는 findPricing 매칭이 안 되므로 위에서 미리 합산한 비용(otherUsage)을 쓰고,
-  // 실모델은 그대로 실시간 계산한다. 비용이 하나도 없으면 null → fmtUsd가 '—'로 표시한다.
+  // 실모델은 그대로 계산한다. 비용이 하나도 없으면 null, 일부만 계산됐으면
+  // partial=true로 전달해 완전한 합계처럼 보이지 않게 한다.
   const costByModel = new Map(entries.map(([model]) => {
-    if (model === OTHER_LABEL) return [model, otherUsage.hasCost ? otherUsage.cost : null];
-    return [model, modelCostUsd(byModelUsage.get(model))];
+    const u = model === OTHER_LABEL ? otherUsage : byModelUsage.get(model);
+    return [model, { cost: modelCostUsd(u), partial: u.hasCost && u.hasMissingCost }];
   }));
   modelChartState = { entries, total, costByModel };
 
   const totalItem = document.createElement('div');
   totalItem.className = 'legend-item legend-total';
   const totalText = document.createElement('b');
-  totalText.textContent = `총 예상 비용: ${fmtUsd(totalCost)} · 총 소모 토큰: ${fmtKo(totalTokens)}`;
-  totalText.title = `총 소모 토큰: ${totalTokens.toLocaleString('ko-KR')}`;
+  const totalCostLabel = totalHasMissingCost ? '총 예상 비용(부분 합계)' : '총 예상 비용';
+  totalText.textContent = `${totalCostLabel}: ${fmtUsdPartial(totalHasCost ? totalCost : null, totalHasCost && totalHasMissingCost)} · 총 소모 토큰: ${fmtKo(totalTokens)}`;
+  totalText.title = totalHasMissingCost
+    ? `일부 모델의 단가가 없습니다. 총 소모 토큰: ${totalTokens.toLocaleString('ko-KR')}`
+    : `총 소모 토큰: ${totalTokens.toLocaleString('ko-KR')}`;
   totalItem.appendChild(totalText);
 
   const fragment = document.createDocumentFragment();
@@ -436,7 +445,7 @@ export function renderModelChart(rows) {
     const cost = costByModel.get(model);
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.append(swatch(color), document.createTextNode(`${model} (${pct}%) — ${fmtUsd(cost)}`));
+    item.append(swatch(color), document.createTextNode(`${model} (${pct}%) — ${fmtUsdPartial(cost.cost, cost.partial)}`));
     fragment.appendChild(item);
   });
   legend.replaceChildren(fragment);

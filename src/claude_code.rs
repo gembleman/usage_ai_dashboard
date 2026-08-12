@@ -9,7 +9,7 @@
 //! per group — summing all lines would over-count input tokens by the
 //! number of lines in the group.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -68,14 +68,6 @@ struct TranscriptLine {
     message: Option<MessageBody>,
 }
 
-/// One candidate line for a message.id group, kept until we know it's the
-/// max-output_tokens line in the group.
-struct GroupCandidate {
-    message_id: String,
-    output_tokens: u64,
-    record: UsageRecord,
-}
-
 #[derive(Debug, Default)]
 pub struct ClaudeParseResult {
     pub records: Vec<UsageRecord>,
@@ -83,10 +75,10 @@ pub struct ClaudeParseResult {
 
 pub fn parse_account(account: &ClaudeAccount, include_subagents: bool) -> ClaudeParseResult {
     let projects_dir = account.config_dir.join("projects");
-    let mut records = Vec::new();
+    let mut records_by_message = HashMap::new();
 
     if !projects_dir.is_dir() {
-        return ClaudeParseResult { records };
+        return ClaudeParseResult::default();
     }
 
     for entry in WalkDir::new(&projects_dir)
@@ -106,27 +98,30 @@ pub fn parse_account(account: &ClaudeAccount, include_subagents: bool) -> Claude
             continue;
         }
 
-        parse_file(path, &account.name, is_subagent_file, &mut records);
+        parse_file(
+            path,
+            &account.name,
+            is_subagent_file,
+            &mut records_by_message,
+        );
     }
 
+    let mut records = records_by_message.into_values().collect::<Vec<_>>();
+    records.sort_by_key(|r| r.timestamp);
     ClaudeParseResult { records }
 }
 
-fn parse_file(path: &Path, account: &str, is_subagent_file: bool, records: &mut Vec<UsageRecord>) {
+fn parse_file(
+    path: &Path,
+    account: &str,
+    is_subagent_file: bool,
+    records_by_message: &mut HashMap<String, UsageRecord>,
+) {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
     };
     let reader = BufReader::new(file);
-
-    let mut seen_message_ids: HashSet<String> = HashSet::new();
-    let mut current_group: Option<GroupCandidate> = None;
-
-    let flush = |group: Option<GroupCandidate>, records: &mut Vec<UsageRecord>| {
-        if let Some(g) = group {
-            records.push(g.record);
-        }
-    };
 
     for line in reader.lines() {
         let line = match line {
@@ -160,28 +155,6 @@ fn parse_file(path: &Path, account: &str, is_subagent_file: bool, records: &mut 
             None => continue,
         };
 
-        // If this message_id was already fully flushed earlier in the file
-        // (should not normally happen — groups are contiguous — but guard
-        // against re-appearance per design §5.2).
-        if current_group
-            .as_ref()
-            .map(|g| g.message_id != message_id)
-            .unwrap_or(false)
-        {
-            // New group starting: flush previous.
-            let prev = current_group.take();
-            if let Some(g) = &prev {
-                seen_message_ids.insert(g.message_id.clone());
-            }
-            flush(prev, records);
-        }
-
-        if seen_message_ids.contains(&message_id) {
-            // Already flushed this group earlier (non-contiguous
-            // re-appearance) — skip to avoid double counting.
-            continue;
-        }
-
         let is_subagent = is_subagent_file || parsed.is_sidechain;
         let output_tokens = usage.output_tokens;
 
@@ -208,26 +181,17 @@ fn parse_file(path: &Path, account: &str, is_subagent_file: bool, records: &mut 
             is_subagent,
         };
 
-        match &mut current_group {
-            Some(g) if g.message_id == message_id => {
-                // Same group: keep whichever line has the larger output_tokens.
-                if output_tokens >= g.output_tokens {
-                    g.output_tokens = output_tokens;
-                    g.record = candidate_record;
-                }
+        // The same API response can appear several times within one transcript
+        // and can also be copied into another session file. De-duplicate across
+        // the whole account, retaining the most complete streamed usage line.
+        match records_by_message.get_mut(&message_id) {
+            Some(record) if output_tokens >= record.output_tokens => *record = candidate_record,
+            None => {
+                records_by_message.insert(message_id, candidate_record);
             }
-            _ => {
-                current_group = Some(GroupCandidate {
-                    message_id,
-                    output_tokens,
-                    record: candidate_record,
-                });
-            }
+            _ => {}
         }
     }
-
-    // Flush the final group at EOF.
-    flush(current_group, records);
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +434,12 @@ mod tests {
     use super::*;
     use crate::test_util::TempFile;
 
+    fn parse_test_file(tmp: &TempFile, is_subagent_file: bool) -> Vec<UsageRecord> {
+        let mut grouped = HashMap::new();
+        parse_file(&tmp.path, "user01", is_subagent_file, &mut grouped);
+        grouped.into_values().collect()
+    }
+
     #[test]
     fn dedups_by_message_id_keeping_max_output_tokens() {
         let lines = vec![
@@ -478,8 +448,7 @@ mod tests {
             r#"{"isSidechain":false,"sessionId":"s1","timestamp":"2026-07-08T09:25:13.000Z","type":"assistant","message":{"id":"msg_1","model":"claude-fable-5","stop_reason":"tool_use","usage":{"input_tokens":4557,"cache_creation_input_tokens":4173,"cache_read_input_tokens":16084,"output_tokens":1155}}}"#,
         ];
         let tmp = TempFile::new(&lines);
-        let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", false, &mut records);
+        let records = parse_test_file(&tmp, false);
 
         assert_eq!(records.len(), 1, "all 3 lines are one message.id group");
         assert_eq!(records[0].output_tokens, 1155);
@@ -495,8 +464,7 @@ mod tests {
             r#"{"isSidechain":false,"sessionId":"s1","timestamp":"2026-07-08T09:26:00.000Z","type":"assistant","message":{"id":"msg_2","model":"m1","usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":8}}}"#,
         ];
         let tmp = TempFile::new(&lines);
-        let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", false, &mut records);
+        let records = parse_test_file(&tmp, false);
 
         assert_eq!(records.len(), 2);
         let total_input: u64 = records.iter().map(|r| r.input_tokens).sum();
@@ -509,13 +477,27 @@ mod tests {
             r#"{"isSidechain":true,"sessionId":"s1","timestamp":"2026-07-08T09:25:11.000Z","type":"assistant","message":{"id":"msg_1","model":"m1","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}"#,
         ];
         let tmp = TempFile::new(&lines_sidechain);
-        let mut records = Vec::new();
-        parse_file(&tmp.path, "user01", false, &mut records);
+        let records = parse_test_file(&tmp, false);
         assert!(records[0].is_subagent);
 
-        let mut records2 = Vec::new();
-        parse_file(&tmp.path, "user01", true, &mut records2);
+        let records2 = parse_test_file(&tmp, true);
         assert!(records2[0].is_subagent);
+    }
+
+    #[test]
+    fn dedups_message_ids_across_transcript_files() {
+        let first = TempFile::new(&[
+            r#"{"type":"assistant","timestamp":"2026-08-04T22:42:12.868Z","message":{"id":"msg_copied","model":"claude-opus-5","usage":{"input_tokens":2,"cache_creation_input_tokens":1094,"cache_read_input_tokens":191716,"output_tokens":100}}}"#,
+        ]);
+        let copied = TempFile::new(&[
+            r#"{"type":"assistant","timestamp":"2026-08-04T22:42:12.868Z","message":{"id":"msg_copied","model":"claude-opus-5","usage":{"input_tokens":2,"cache_creation_input_tokens":1094,"cache_read_input_tokens":191716,"output_tokens":1390}}}"#,
+        ]);
+        let mut grouped = HashMap::new();
+        parse_file(&first.path, "user01", false, &mut grouped);
+        parse_file(&copied.path, "user01", false, &mut grouped);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped["msg_copied"].output_tokens, 1390);
     }
 
     #[test]

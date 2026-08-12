@@ -53,18 +53,26 @@ struct TokenCountInfo {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct LogRateLimitWindow {
-    #[serde(default)] used_percent: f64,
-    #[serde(default)] window_minutes: u64,
-    #[serde(default)] resets_at: i64,
+    #[serde(default)]
+    used_percent: f64,
+    #[serde(default)]
+    window_minutes: u64,
+    #[serde(default)]
+    resets_at: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct LogRateLimits {
-    #[serde(default)] limit_id: Option<String>,
-    #[serde(default)] plan_type: Option<String>,
-    #[serde(default)] rate_limit_reached_type: Option<String>,
-    #[serde(default)] primary: Option<LogRateLimitWindow>,
-    #[serde(default)] secondary: Option<LogRateLimitWindow>,
+    #[serde(default)]
+    limit_id: Option<String>,
+    #[serde(default)]
+    plan_type: Option<String>,
+    #[serde(default)]
+    rate_limit_reached_type: Option<String>,
+    #[serde(default)]
+    primary: Option<LogRateLimitWindow>,
+    #[serde(default)]
+    secondary: Option<LogRateLimitWindow>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,7 +111,10 @@ pub fn parse_account(account: &CodexAccount) -> CodexParseResult {
     let mut rate_limit_snapshot = None;
 
     if !sessions_dir.is_dir() {
-        return CodexParseResult { records, rate_limit_snapshot };
+        return CodexParseResult {
+            records,
+            rate_limit_snapshot,
+        };
     }
 
     for entry in WalkDir::new(&sessions_dir)
@@ -125,10 +136,18 @@ pub fn parse_account(account: &CodexAccount) -> CodexParseResult {
         parse_file(path, &account.name, &mut records, &mut rate_limit_snapshot);
     }
 
-    CodexParseResult { records, rate_limit_snapshot }
+    CodexParseResult {
+        records,
+        rate_limit_snapshot,
+    }
 }
 
-fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest_snapshot: &mut Option<RateLimitSnapshot>) {
+fn parse_file(
+    path: &Path,
+    account: &str,
+    records: &mut Vec<UsageRecord>,
+    latest_snapshot: &mut Option<RateLimitSnapshot>,
+) {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return,
@@ -182,38 +201,57 @@ fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest
                 let Some(info) = ev.info else {
                     continue;
                 };
-                if let Some(delta) = info.last_token_usage {
-                    // OpenAI's `input_tokens` is cache-inclusive (cached_input_tokens
-                    // is a subset, not additive) — e.g. input_tokens=16296,
-                    // cached_input_tokens=11648, output_tokens=776,
-                    // total_tokens=17072=input+output. Normalize to the
-                    // claude_code convention (input_tokens excludes cache) so
-                    // downstream cost estimation doesn't double-count the
-                    // cached portion at both full price and cache-read price.
-                    let non_cached_input =
-                        delta.input_tokens.saturating_sub(delta.cached_input_tokens);
-                    records.push(UsageRecord {
-                        source: Source::Codex,
-                        account: account.to_string(),
-                        timestamp,
-                        model: current_model.clone(),
-                        // Codex logs no cost; it is estimated from model_pricing.
-                        cost_usd: None,
-                        input_tokens: non_cached_input,
-                        cached_input_tokens: delta.cached_input_tokens,
-                        // Codex has no cache-creation concept; its cache tokens
-                        // are all reads (cached_input_tokens above).
-                        cache_creation_input_tokens: 0,
-                        output_tokens: delta.output_tokens,
-                        reasoning_output_tokens: delta.reasoning_output_tokens,
-                        total_tokens: delta.total_tokens,
-                        is_subagent: false,
-                    });
+                if let (Some(delta), Some(model)) = (info.last_token_usage, current_model.as_ref())
+                {
+                    // Spawned subagent rollouts begin by copying token_count
+                    // history from their parent before their first turn_context.
+                    // Requiring a current model keeps that inherited history
+                    // from being billed a second time.
+                    //
+                    // Context compaction can also emit a pseudo delta whose
+                    // category fields are all zero while total_tokens is set,
+                    // even though total_token_usage did not change. It is not
+                    // a new model request and must not become a usage record.
+                    if !(delta.input_tokens == 0
+                        && delta.cached_input_tokens == 0
+                        && delta.output_tokens == 0
+                        && delta.reasoning_output_tokens == 0)
+                    {
+                        // OpenAI's `input_tokens` is cache-inclusive (cached_input_tokens
+                        // is a subset, not additive) — e.g. input_tokens=16296,
+                        // cached_input_tokens=11648, output_tokens=776,
+                        // total_tokens=17072=input+output. Normalize to the
+                        // claude_code convention (input_tokens excludes cache) so
+                        // downstream cost estimation doesn't double-count the
+                        // cached portion at both full price and cache-read price.
+                        let non_cached_input =
+                            delta.input_tokens.saturating_sub(delta.cached_input_tokens);
+                        records.push(UsageRecord {
+                            source: Source::Codex,
+                            account: account.to_string(),
+                            timestamp,
+                            model: Some(model.clone()),
+                            // Codex logs no cost; it is estimated from model_pricing.
+                            cost_usd: None,
+                            input_tokens: non_cached_input,
+                            cached_input_tokens: delta.cached_input_tokens,
+                            // Codex has no cache-creation concept; its cache tokens
+                            // are all reads (cached_input_tokens above).
+                            cache_creation_input_tokens: 0,
+                            output_tokens: delta.output_tokens,
+                            reasoning_output_tokens: delta.reasoning_output_tokens,
+                            total_tokens: delta.total_tokens,
+                            is_subagent: false,
+                        });
+                    }
                 }
 
                 if let Some(rl) = ev.rate_limits {
                     if (rl.primary.is_some() || rl.secondary.is_some())
-                        && latest_snapshot.as_ref().map(|s| timestamp > s.observed_at).unwrap_or(true)
+                        && latest_snapshot
+                            .as_ref()
+                            .map(|s| timestamp > s.observed_at)
+                            .unwrap_or(true)
                     {
                         let window = |w: LogRateLimitWindow| RateLimitWindowSnapshot {
                             used_percent: w.used_percent,
@@ -237,10 +275,8 @@ fn parse_file(path: &Path, account: &str, records: &mut Vec<UsageRecord>, latest
                         // containing only the weekly window. Keep windows of
                         // other durations from the preceding log snapshot so
                         // a weekly-only event does not erase the 5-hour quota.
-                        *latest_snapshot = merge_rate_limit_snapshots(
-                            latest_snapshot.take(),
-                            Some(incoming),
-                        );
+                        *latest_snapshot =
+                            merge_rate_limit_snapshots(latest_snapshot.take(), Some(incoming));
                     }
                 }
             }
@@ -259,9 +295,14 @@ pub fn merge_rate_limit_snapshots(
     let mut merged = live.or(log.clone())?;
     if let Some(log) = log {
         let mut windows = [merged.primary.take(), merged.secondary.take()]
-            .into_iter().flatten().collect::<Vec<_>>();
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         for w in [log.primary, log.secondary].into_iter().flatten() {
-            if !windows.iter().any(|existing| existing.window_minutes == w.window_minutes) {
+            if !windows
+                .iter()
+                .any(|existing| existing.window_minutes == w.window_minutes)
+            {
                 windows.push(w);
             }
         }
@@ -484,6 +525,7 @@ mod tests {
         // output=776, total=17072=input+output). We store input_tokens as
         // the non-cached remainder so cost estimation doesn't double-count.
         let lines = vec![
+            r#"{"timestamp":"2026-06-26T15:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
             r#"{"timestamp":"2026-06-26T15:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":16296,"cached_input_tokens":11648,"output_tokens":776,"reasoning_output_tokens":516,"total_tokens":17072}},"rate_limits":null}}"#,
         ];
         let tmp = write_temp_jsonl(&lines);
@@ -511,6 +553,7 @@ mod tests {
     fn skips_broken_lines_and_continues() {
         let lines = vec![
             r#"{ this is not valid json"#,
+            r#"{"timestamp":"2026-06-26T15:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
             r#"{"timestamp":"2026-06-26T15:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":6}},"rate_limits":null}}"#,
         ];
         let tmp = write_temp_jsonl(&lines);
@@ -518,6 +561,35 @@ mod tests {
         parse_file(&tmp.path, "user01", &mut records, &mut None);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 5);
+    }
+
+    #[test]
+    fn skips_inherited_usage_before_first_turn_context() {
+        let lines = vec![
+            r#"{"timestamp":"2026-08-05T20:40:06.425Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":13959,"cached_input_tokens":11008,"output_tokens":257,"reasoning_output_tokens":22,"total_tokens":14216}}}}"#,
+            r#"{"timestamp":"2026-08-05T20:40:10.657Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-08-05T20:40:16.635Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":14735,"cached_input_tokens":11008,"output_tokens":183,"reasoning_output_tokens":24,"total_tokens":14918}}}}"#,
+        ];
+        let tmp = write_temp_jsonl(&lines);
+        let mut records = Vec::new();
+        parse_file(&tmp.path, "user04", &mut records, &mut None);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].total_tokens, 14918);
+        assert_eq!(records[0].model.as_deref(), Some("gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn skips_context_compaction_pseudo_delta() {
+        let lines = vec![
+            r#"{"timestamp":"2026-08-12T12:28:00Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-08-12T12:29:07.828Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":42445446,"cached_input_tokens":41529856,"output_tokens":51918,"reasoning_output_tokens":15107,"total_tokens":42497364},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":10688}}}}"#,
+        ];
+        let tmp = write_temp_jsonl(&lines);
+        let mut records = Vec::new();
+        parse_file(&tmp.path, "user02", &mut records, &mut None);
+
+        assert!(records.is_empty());
     }
 
     #[test]
@@ -532,7 +604,10 @@ mod tests {
         parse_file(&tmp.path, "user02", &mut records, &mut snapshot);
 
         let snapshot = snapshot.unwrap();
-        assert_eq!(snapshot.observed_at.to_rfc3339(), "2026-06-26T15:02:00+00:00");
+        assert_eq!(
+            snapshot.observed_at.to_rfc3339(),
+            "2026-06-26T15:02:00+00:00"
+        );
         assert_eq!(snapshot.primary.as_ref().unwrap().window_minutes, 300);
         assert_eq!(snapshot.primary.as_ref().unwrap().used_percent, 44.0);
         assert_eq!(snapshot.secondary.as_ref().unwrap().window_minutes, 10080);

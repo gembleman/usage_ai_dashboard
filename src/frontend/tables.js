@@ -3,7 +3,7 @@ import {
   emptyTableRow,
   fmt,
   fmtKo,
-  fmtUsd,
+  fmtUsdPartial,
   rowCostUsd,
   updateWithViewTransition,
 } from './util.js';
@@ -26,7 +26,11 @@ function filterUsageRowsByRange(usageRows, range) {
 // 원본 usage 데이터를 저장하고, 현재 선택된 전역 기간으로 필터링해
 // 트렌드 차트 / 계정별 합계 / 모델별 분포를 다시 그린다.
 export function renderGlobalFilteredPanels(usageRows, hourlyRows = []) {
-  globalRangeState.rawRows = usageRows || [];
+  // The API keeps detailed usage in UTC-hour buckets. Convert each bucket to
+  // the browser's local calendar date before every daily panel groups it.
+  globalRangeState.rawRows = (usageRows || [])
+    .map(row => ({ ...row, date: localDateForHour(row.hour) }))
+    .filter(row => row.date);
   globalRangeState.rawHourlyRows = hourlyRows || [];
   applyGlobalRangeFilter();
 }
@@ -80,7 +84,7 @@ function aggregateAccountRows(usageRows) {
   return [...Map.groupBy(usageRows, r => `${r.source}/${r.account}`).values()]
     .map(group => {
       const first = group[0];
-      const g = { source: first.source, account: first.account, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+      const g = { source: first.source, account: first.account, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false, hasMissingCost: false };
       for (const r of group) {
         g.input_tokens += r.input_tokens;
         g.cached_input_tokens += r.cached_input_tokens;
@@ -90,6 +94,7 @@ function aggregateAccountRows(usageRows) {
         g.turns += r.turns;
         const c = rowCostUsd(r);
         if (c != null) { g.cost += c; g.hasCost = true; }
+        else g.hasMissingCost = true;
       }
       return g;
     })
@@ -98,7 +103,7 @@ function aggregateAccountRows(usageRows) {
 
 function sumUsageGroup(group) {
   const first = group[0];
-  const g = { source: first.source, account: first.account, date: first.date, model: first.model, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false };
+  const g = { source: first.source, account: first.account, date: first.date, model: first.model, input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0, total_tokens: 0, turns: 0, cost: 0, hasCost: false, hasMissingCost: false };
   for (const r of group) {
     g.input_tokens += r.input_tokens;
     g.cached_input_tokens += r.cached_input_tokens;
@@ -108,6 +113,7 @@ function sumUsageGroup(group) {
     g.turns += r.turns;
     const c = rowCostUsd(r);
     if (c != null) { g.cost += c; g.hasCost = true; }
+    else g.hasMissingCost = true;
   }
   return g;
 }
@@ -125,10 +131,15 @@ function appendAccountRow(parent, r) {
   appendTextCell(tr, r.account);
   appendTextCell(tr, fmtKo(r.input_tokens), fmt(r.input_tokens));
   appendTextCell(tr, fmtKo(r.cached_input_tokens), fmt(r.cached_input_tokens));
+  appendTextCell(tr, fmtKo(r.cache_creation_input_tokens), fmt(r.cache_creation_input_tokens));
   appendTextCell(tr, fmtKo(r.output_tokens), fmt(r.output_tokens));
   appendTextCell(tr, fmtKo(r.total_tokens), fmt(r.total_tokens));
   appendTextCell(tr, fmt(r.turns));
-  appendTextCell(tr, fmtUsd(r.hasCost ? r.cost : null));
+  appendTextCell(
+    tr,
+    fmtUsdPartial(r.hasCost ? r.cost : null, r.hasCost && r.hasMissingCost),
+    r.hasMissingCost ? '일부 모델의 단가가 없어 계산 가능한 비용만 표시합니다.' : null,
+  );
   parent.appendChild(tr);
 }
 
@@ -137,7 +148,7 @@ function renderAccountTable(usageRows) {
   const tbody = document.querySelector('#accountTable tbody');
 
   if (rows.length === 0) {
-    tbody.replaceChildren(emptyTableRow(8, '데이터가 없습니다.'));
+    tbody.replaceChildren(emptyTableRow(9, '데이터가 없습니다.'));
     return;
   }
 
@@ -267,10 +278,15 @@ function appendUsageRow(parent, r) {
   appendTextCell(tr, r.model);
   appendTextCell(tr, fmtKo(r.input_tokens), fmt(r.input_tokens));
   appendTextCell(tr, fmtKo(r.cached_input_tokens), fmt(r.cached_input_tokens));
+  appendTextCell(tr, fmtKo(r.cache_creation_input_tokens), fmt(r.cache_creation_input_tokens));
   appendTextCell(tr, fmtKo(r.output_tokens), fmt(r.output_tokens));
   appendTextCell(tr, fmtKo(r.total_tokens), fmt(r.total_tokens));
   appendTextCell(tr, fmt(r.turns));
-  appendTextCell(tr, fmtUsd(r.hasCost ? r.cost : null));
+  appendTextCell(
+    tr,
+    fmtUsdPartial(r.hasCost ? r.cost : null, r.hasCost && r.hasMissingCost),
+    r.hasMissingCost ? '일부 모델의 단가가 없어 계산 가능한 비용만 표시합니다.' : null,
+  );
   parent.appendChild(tr);
 }
 
@@ -281,7 +297,7 @@ function renderUsageTablePage() {
   pagination.replaceChildren();
 
   if (sorted.length === 0) {
-    tbody.replaceChildren(emptyTableRow(10, '데이터가 없습니다.'));
+    tbody.replaceChildren(emptyTableRow(11, '데이터가 없습니다.'));
     return;
   }
 

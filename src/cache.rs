@@ -18,7 +18,7 @@ use rusqlite::{Connection, params};
 use crate::model::{
     ExtraUsageSnapshot, RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord,
 };
-use crate::{AggKey, AggTotals, HourlyAggKey};
+use crate::{AggTotals, DetailedHourlyAggKey, HourlyAggKey};
 
 /// Cache schema version, tracked via `PRAGMA user_version`.
 /// v1: codex rows store `input_tokens` excluding `cached_input_tokens`
@@ -193,7 +193,7 @@ impl Cache {
         &self,
     ) -> rusqlite::Result<
         Option<(
-            BTreeMap<AggKey, AggTotals>,
+            BTreeMap<DetailedHourlyAggKey, AggTotals>,
             BTreeMap<HourlyAggKey, AggTotals>,
             Vec<RateLimitSnapshot>,
             usize,
@@ -207,13 +207,13 @@ impl Cache {
         }
 
         let mut stmt = self.conn.prepare(
-            "SELECT source, account, substr(timestamp, 1, 10), COALESCE(model, 'unknown'),
+            "SELECT source, account, substr(timestamp, 1, 13) || ':00:00Z', COALESCE(model, 'unknown'),
                     SUM(input_tokens), SUM(cached_input_tokens),
                     SUM(cache_creation_input_tokens), SUM(output_tokens),
                     SUM(reasoning_output_tokens), SUM(total_tokens), COUNT(*),
                     SUM(cost_usd)
              FROM usage_records
-             GROUP BY source, account, substr(timestamp, 1, 10), COALESCE(model, 'unknown')",
+             GROUP BY source, account, substr(timestamp, 1, 13), COALESCE(model, 'unknown')",
         )?;
         let rows = stmt.query_map([], |row| {
             let source: String = row.get(0)?;
@@ -743,6 +743,23 @@ mod tests {
         // Codex logs no cost: SUM() over an all-NULL group stays NULL so the
         // frontend falls back to estimating from model_pricing.
         assert_eq!(codex.cost_usd, None);
+    }
+
+    #[test]
+    fn detailed_aggregate_keeps_utc_hour_boundaries() {
+        let mut cache = open_mem();
+        let mut first = record(Source::Codex, "user01", 1, 10);
+        first.timestamp = Utc.with_ymd_and_hms(2026, 8, 1, 23, 55, 0).unwrap();
+        let mut second = record(Source::Codex, "user01", 2, 20);
+        second.timestamp = Utc.with_ymd_and_hms(2026, 8, 2, 0, 5, 0).unwrap();
+        cache.save(&[first, second], &[]).unwrap();
+
+        let (aggregate, _, _, _) = cache.load_aggregate().unwrap().unwrap();
+        let hours = aggregate
+            .keys()
+            .map(|(_, _, hour, _)| hour.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(hours, vec!["2026-08-01T23:00:00Z", "2026-08-02T00:00:00Z"]);
     }
 
     #[test]

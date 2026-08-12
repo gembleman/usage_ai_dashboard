@@ -118,6 +118,10 @@ export function rowCostUsd(row) {
 }
 
 export const fmtUsd = v => !Number.isFinite(v) ? '—' : USD_FORMAT.format(v);
+export const fmtUsdPartial = (v, partial = false) => {
+  const formatted = fmtUsd(v);
+  return partial && Number.isFinite(v) ? `${formatted}+` : formatted;
+};
 const tooltip = document.getElementById('tooltip');
 
 export function showTooltip(evt, html) {

@@ -18,6 +18,9 @@ use crate::model::{RateLimitSnapshot, Source, UsageRecord};
 
 /// Aggregation key: source, account, date (YYYY-MM-DD), model.
 pub type AggKey = (Source, String, String, String);
+/// Browser-facing aggregation key: source, account, UTC hour, model.
+/// The browser converts the hour to its local date before daily grouping.
+pub type DetailedHourlyAggKey = (Source, String, String, String);
 /// Hourly aggregation key: source, account, UTC hour (RFC 3339).
 pub type HourlyAggKey = (Source, String, String);
 
@@ -81,6 +84,32 @@ pub fn aggregate(records: &[UsageRecord]) -> BTreeMap<AggKey, AggTotals> {
         let model = r.model.clone().unwrap_or_else(|| "unknown".to_string());
         let key = (r.source, r.account.clone(), date, model);
         let entry = map.entry(key).or_default();
+        entry.input_tokens += r.input_tokens;
+        entry.cached_input_tokens += r.cached_input_tokens;
+        entry.cache_creation_input_tokens += r.cache_creation_input_tokens;
+        entry.output_tokens += r.output_tokens;
+        entry.reasoning_output_tokens += r.reasoning_output_tokens;
+        entry.total_tokens += r.total_tokens;
+        entry.count += 1;
+        if let Some(cost) = r.cost_usd {
+            *entry.cost_usd.get_or_insert(0.0) += cost;
+        }
+    }
+    map
+}
+
+/// Aggregate detailed usage by UTC hour. Keeping the hour boundary until the
+/// browser receives the data lets every client group days in its own time zone.
+pub fn aggregate_detailed_hourly(
+    records: &[UsageRecord],
+) -> BTreeMap<DetailedHourlyAggKey, AggTotals> {
+    let mut map: BTreeMap<DetailedHourlyAggKey, AggTotals> = BTreeMap::new();
+    for r in records {
+        let hour = r.timestamp.format("%Y-%m-%dT%H:00:00Z").to_string();
+        let model = r.model.clone().unwrap_or_else(|| "unknown".to_string());
+        let entry = map
+            .entry((r.source, r.account.clone(), hour, model))
+            .or_default();
         entry.input_tokens += r.input_tokens;
         entry.cached_input_tokens += r.cached_input_tokens;
         entry.cache_creation_input_tokens += r.cache_creation_input_tokens;

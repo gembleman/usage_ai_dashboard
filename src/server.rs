@@ -18,7 +18,10 @@ use serde::Serialize;
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::model::{RateLimitSnapshot, Source, UsageRecord};
-use crate::{AggKey, AggTotals, HourlyAggKey, aggregate, aggregate_hourly, parse_all};
+use crate::{
+    AggTotals, DetailedHourlyAggKey, HourlyAggKey, aggregate_detailed_hourly, aggregate_hourly,
+    parse_all,
+};
 
 const CSS_CONTENT_TYPE: &str = "text/css; charset=utf-8";
 const JS_CONTENT_TYPE: &str = "text/javascript; charset=utf-8";
@@ -76,7 +79,7 @@ type SharedState = Arc<RwLock<AppData>>;
 struct AggRow {
     source: String,
     account: String,
-    date: String,
+    hour: String,
     model: String,
     input_tokens: u64,
     cached_input_tokens: u64,
@@ -101,14 +104,14 @@ struct HourlyAggRow {
 fn agg_totals_to_row(
     source: Source,
     account: &str,
-    date: &str,
+    hour: &str,
     model: &str,
     totals: &AggTotals,
 ) -> AggRow {
     AggRow {
         source: source.to_string(),
         account: account.to_string(),
-        date: date.to_string(),
+        hour: hour.to_string(),
         model: model.to_string(),
         input_tokens: totals.input_tokens,
         cached_input_tokens: totals.cached_input_tokens,
@@ -126,9 +129,10 @@ fn to_json_bytes<T: Serialize + ?Sized>(value: &T) -> Bytes {
     Bytes::from(serde_json::to_vec(value).expect("JSON serialization failed"))
 }
 
-/// Build the /api/usage body: full source x account x date x model aggregation.
+/// Build the /api/usage body at UTC-hour resolution. The browser converts each
+/// bucket to its local date before rendering daily panels.
 fn build_usage_json(records: &[UsageRecord]) -> Bytes {
-    let agg = aggregate(records);
+    let agg = aggregate_detailed_hourly(records);
     build_aggregate_json(&agg)
 }
 
@@ -149,11 +153,13 @@ fn build_hourly_aggregate_json(agg: &std::collections::BTreeMap<HourlyAggKey, Ag
     to_json_bytes(&rows)
 }
 
-fn build_aggregate_json(agg: &std::collections::BTreeMap<AggKey, AggTotals>) -> Bytes {
+fn build_aggregate_json(
+    agg: &std::collections::BTreeMap<DetailedHourlyAggKey, AggTotals>,
+) -> Bytes {
     let rows: Vec<AggRow> = agg
         .iter()
-        .map(|((source, account, date, model), totals)| {
-            agg_totals_to_row(*source, account, date, model, totals)
+        .map(|((source, account, hour, model), totals)| {
+            agg_totals_to_row(*source, account, hour, model, totals)
         })
         .collect();
     to_json_bytes(&rows)
@@ -161,7 +167,7 @@ fn build_aggregate_json(agg: &std::collections::BTreeMap<AggKey, AggTotals>) -> 
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
-/// GET /api/usage - full source x account x date x model aggregation,
+/// GET /api/usage - full source x account x UTC-hour x model aggregation,
 /// precomputed at startup / refresh.
 async fn get_usage(State(state): State<SharedState>) -> impl IntoResponse {
     let body = state.read().unwrap().usage_json.clone();
@@ -222,7 +228,7 @@ struct RefreshResponse {
 
 type RefreshPayload = (Bytes, Bytes, Bytes, usize, usize);
 type CachedAggregate = (
-    std::collections::BTreeMap<AggKey, AggTotals>,
+    std::collections::BTreeMap<DetailedHourlyAggKey, AggTotals>,
     std::collections::BTreeMap<HourlyAggKey, AggTotals>,
     Vec<RateLimitSnapshot>,
     usize,
@@ -352,6 +358,23 @@ mod tests {
         assert_eq!(rows[0]["total_tokens"], 30);
         assert_eq!(rows[1]["hour"], "2026-08-11T02:00:00Z");
         assert_eq!(rows[1]["total_tokens"], 7);
+    }
+
+    #[test]
+    fn detailed_usage_keeps_utc_hour_for_browser_local_grouping() {
+        let records = [
+            usage_record("2026-08-11T23:55:00Z", "gpt-5", 10),
+            usage_record("2026-08-12T00:05:00Z", "gpt-5", 20),
+        ];
+
+        let body = build_usage_json(&records);
+        let rows: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rows = rows.as_array().unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["hour"], "2026-08-11T23:00:00Z");
+        assert_eq!(rows[1]["hour"], "2026-08-12T00:00:00Z");
+        assert!(rows[0].get("date").is_none());
     }
 }
 

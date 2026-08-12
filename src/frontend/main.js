@@ -28,10 +28,10 @@ function showPanelError(containerId, message, colspan) {
 function showUsagePanelErrors(message) {
   showPanelError('trendChart', message);
   document.getElementById('trendLegend').replaceChildren();
-  showPanelError('accountTable', message, 8);
+  showPanelError('accountTable', message, 9);
   showPanelError('modelChart', message);
   document.getElementById('modelLegend').replaceChildren();
-  showPanelError('usageTable', message, 10);
+  showPanelError('usageTable', message, 11);
   document.getElementById('usagePagination').replaceChildren();
 }
 
