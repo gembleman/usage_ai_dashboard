@@ -1,6 +1,7 @@
 /target
 /cache.sqlite3
 /docs
+/.firecrawl/
 *.md
 !README.md
 config.toml

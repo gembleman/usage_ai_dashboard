@@ -28,6 +28,7 @@ anthropic_seconds = 8
 
 # 모델별 100만 토큰당 USD 가격
 [model_pricing]
+"claude-opus-5" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
 "claude-opus-4-8" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
 "claude-opus-4-7" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
 "claude-sonnet-5" = { input = 3.0, cached_input = 0.3, cache_creation_input = 3.75, output = 15.0 }
