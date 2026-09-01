@@ -46,6 +46,7 @@ anthropic_seconds = 8
 [[codex_accounts]]
 name = "user1"
 codex_home = "~/.codex"
+# refresh = false # 이 계정은 수집하지 않고 캐시에 저장된 기존 데이터만 유지
 
 [[claude_accounts]]
 name = "user2"
@@ -59,7 +60,19 @@ pi_home = "~/.pi"
 [[opencode_accounts]]
 name = "user4"
 data_dir = "~/.local/share/opencode"
+
+# 별도 token-usage-api 서버의 /records 데이터도 함께 수집
+[[token_api_servers]]
+name = "server-169" # 대시보드에 표시할 계정명
+url = "http://192.168.1.169:8787"
+# refresh = false
 ```
+
+각 `codex_accounts`, `claude_accounts`, `pi_accounts`, `opencode_accounts`,
+`token_api_servers` 항목에서 `refresh = false`로 지정하면 해당 계정은 시작 시
+수집과 수동/자동 새로고침 대상에서 제외됩니다. SQLite 캐시에 이미 저장된
+데이터는 삭제되지 않아 대시보드에 계속 표시됩니다. 이 항목을 생략하면
+기본값은 `true`입니다.
 
 ### OpenCode 사용량에 대해
 

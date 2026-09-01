@@ -8,6 +8,7 @@ mod pi;
 mod server;
 #[cfg(test)]
 mod test_util;
+mod token_api;
 
 use std::collections::BTreeMap;
 
@@ -286,7 +287,7 @@ pub struct ParseSummary {
     pub total_records: usize,
 }
 
-/// Parse all configured Codex + Claude Code + pi + OpenCode accounts and return the raw
+/// Parse all configured local accounts and remote token API servers and return the raw
 /// records plus any Codex rate limit snapshots and a summary. Does no
 /// stdout output — the CLI prints the summary, the server ignores it.
 /// Shared by the console path and the web server (both initial load and
@@ -299,68 +300,82 @@ pub fn parse_all(
     let claude_accounts = config.claude_accounts(include_dormant_claude);
     let pi_accounts = config.pi_accounts(include_dormant_claude);
     let opencode_accounts = config.opencode_accounts(include_dormant_claude);
+    let token_api_servers = config.token_api_servers(include_dormant_claude);
 
     // Accounts are independent of each other, so parse each on its own
     // thread. This matters most for Claude Code, where the rate-limit fetch
     // is a blocking HTTP call that would otherwise serialize
     // per account. Joining in spawn order keeps the summary deterministic.
-    let (codex_results, claude_results, pi_results, opencode_results) = std::thread::scope(|s| {
-        let codex_handles: Vec<_> = codex_accounts
-            .iter()
-            .map(|account| {
-                s.spawn(move || {
-                    let result = codex::parse_account(account);
-                    let snapshot =
-                        codex::fetch_rate_limit_snapshot(account, config.timeouts().api_seconds);
-                    (result, snapshot)
+    let (codex_results, claude_results, pi_results, opencode_results, token_api_results) =
+        std::thread::scope(|s| {
+            let codex_handles: Vec<_> = codex_accounts
+                .iter()
+                .map(|account| {
+                    s.spawn(move || {
+                        let result = codex::parse_account(account);
+                        let snapshot = codex::fetch_rate_limit_snapshot(
+                            account,
+                            config.timeouts().api_seconds,
+                        );
+                        (result, snapshot)
+                    })
                 })
-            })
-            .collect();
-        let claude_handles: Vec<_> = claude_accounts
-            .iter()
-            .map(|account| {
-                s.spawn(move || {
-                    let result = claude_code::parse_account(account, account.include_subagents);
-                    // Rate limits for Claude Code come from the Anthropic OAuth
-                    // usage API (not the local transcripts). Any failure yields
-                    // None and is skipped.
-                    let snapshot = claude_code::fetch_rate_limit_snapshot(
-                        account,
-                        config.timeouts().anthropic_seconds,
-                    );
-                    (result, snapshot)
+                .collect();
+            let claude_handles: Vec<_> = claude_accounts
+                .iter()
+                .map(|account| {
+                    s.spawn(move || {
+                        let result = claude_code::parse_account(account, account.include_subagents);
+                        // Rate limits for Claude Code come from the Anthropic OAuth
+                        // usage API (not the local transcripts). Any failure yields
+                        // None and is skipped.
+                        let snapshot = claude_code::fetch_rate_limit_snapshot(
+                            account,
+                            config.timeouts().anthropic_seconds,
+                        );
+                        (result, snapshot)
+                    })
                 })
-            })
-            .collect();
-        // pi keeps no rate-limit or quota data in its logs, so this is a
-        // plain parse with no accompanying fetch.
-        let pi_handles: Vec<_> = pi_accounts
-            .iter()
-            .map(|account| s.spawn(move || pi::parse_account(account)))
-            .collect();
-        let opencode_handles: Vec<_> = opencode_accounts
-            .iter()
-            .map(|account| s.spawn(move || opencode::parse_account(account)))
-            .collect();
-        (
-            codex_handles
-                .into_iter()
-                .map(|h| h.join().expect("codex parse thread panicked"))
-                .collect::<Vec<_>>(),
-            claude_handles
-                .into_iter()
-                .map(|h| h.join().expect("claude parse thread panicked"))
-                .collect::<Vec<_>>(),
-            pi_handles
-                .into_iter()
-                .map(|h| h.join().expect("pi parse thread panicked"))
-                .collect::<Vec<_>>(),
-            opencode_handles
-                .into_iter()
-                .map(|h| h.join().expect("opencode parse thread panicked"))
-                .collect::<Vec<_>>(),
-        )
-    });
+                .collect();
+            // pi keeps no rate-limit or quota data in its logs, so this is a
+            // plain parse with no accompanying fetch.
+            let pi_handles: Vec<_> = pi_accounts
+                .iter()
+                .map(|account| s.spawn(move || pi::parse_account(account)))
+                .collect();
+            let opencode_handles: Vec<_> = opencode_accounts
+                .iter()
+                .map(|account| s.spawn(move || opencode::parse_account(account)))
+                .collect();
+            let token_api_handles: Vec<_> = token_api_servers
+                .iter()
+                .map(|server| {
+                    s.spawn(move || token_api::fetch_records(server, config.timeouts().api_seconds))
+                })
+                .collect();
+            (
+                codex_handles
+                    .into_iter()
+                    .map(|h| h.join().expect("codex parse thread panicked"))
+                    .collect::<Vec<_>>(),
+                claude_handles
+                    .into_iter()
+                    .map(|h| h.join().expect("claude parse thread panicked"))
+                    .collect::<Vec<_>>(),
+                pi_handles
+                    .into_iter()
+                    .map(|h| h.join().expect("pi parse thread panicked"))
+                    .collect::<Vec<_>>(),
+                opencode_handles
+                    .into_iter()
+                    .map(|h| h.join().expect("opencode parse thread panicked"))
+                    .collect::<Vec<_>>(),
+                token_api_handles
+                    .into_iter()
+                    .map(|h| h.join().expect("token API fetch thread panicked"))
+                    .collect::<Vec<_>>(),
+            )
+        });
 
     let mut all_records: Vec<UsageRecord> = Vec::new();
     let mut rate_limit_snapshots: Vec<RateLimitSnapshot> = Vec::new();
@@ -394,6 +409,19 @@ pub fn parse_all(
     for (account, result) in opencode_accounts.iter().zip(opencode_results) {
         per_account.push((format!("opencode/{}", account.name), result.records.len()));
         all_records.extend(result.records);
+    }
+
+    for (server, result) in token_api_servers.iter().zip(token_api_results) {
+        match result {
+            Ok(records) => {
+                per_account.push((format!("token_api/{}", server.name), records.len()));
+                all_records.extend(records);
+            }
+            Err(error) => {
+                eprintln!("Warning: token_api/{}: {error}", server.name);
+                per_account.push((format!("token_api/{} (unavailable)", server.name), 0));
+            }
+        }
     }
 
     let summary = ParseSummary {

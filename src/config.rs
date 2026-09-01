@@ -13,6 +13,17 @@ use crate::claude_code::ClaudeAccount;
 use crate::codex::CodexAccount;
 use crate::opencode::OpenCodeAccount;
 use crate::pi::PiAccount;
+use crate::token_api::TokenApiServer;
+
+#[derive(Debug, Deserialize)]
+struct TokenApiServerConfig {
+    name: String,
+    url: String,
+    #[serde(default)]
+    dormant: bool,
+    #[serde(default = "default_true")]
+    refresh: bool,
+}
 
 #[derive(Debug, Deserialize)]
 struct CodexAccountConfig {
@@ -20,6 +31,8 @@ struct CodexAccountConfig {
     codex_home: String,
     #[serde(default)]
     dormant: bool,
+    #[serde(default = "default_true")]
+    refresh: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +41,8 @@ struct PiAccountConfig {
     pi_home: String,
     #[serde(default)]
     dormant: bool,
+    #[serde(default = "default_true")]
+    refresh: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +51,8 @@ struct OpenCodeAccountConfig {
     data_dir: String,
     #[serde(default)]
     dormant: bool,
+    #[serde(default = "default_true")]
+    refresh: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +61,8 @@ struct ClaudeAccountConfig {
     config_dir: String,
     #[serde(default)]
     dormant: bool,
+    #[serde(default = "default_true")]
+    refresh: bool,
     #[serde(default = "default_true")]
     include_subagents: bool,
 }
@@ -149,6 +168,8 @@ struct RawConfig {
     pi_accounts: Vec<PiAccountConfig>,
     #[serde(default)]
     opencode_accounts: Vec<OpenCodeAccountConfig>,
+    #[serde(default)]
+    token_api_servers: Vec<TokenApiServerConfig>,
 }
 
 /// Fully-resolved account configuration.
@@ -160,10 +181,11 @@ pub struct Config {
     frontend_dir: PathBuf,
     timeouts: TimeoutConfig,
     model_pricing: HashMap<String, ModelPricing>,
-    codex: Vec<(CodexAccount, bool)>,
-    claude: Vec<(ClaudeAccount, bool)>,
-    pi: Vec<(PiAccount, bool)>,
-    opencode: Vec<(OpenCodeAccount, bool)>,
+    codex: Vec<(CodexAccount, bool, bool)>,
+    claude: Vec<(ClaudeAccount, bool, bool)>,
+    pi: Vec<(PiAccount, bool, bool)>,
+    opencode: Vec<(OpenCodeAccount, bool, bool)>,
+    token_api: Vec<(TokenApiServer, bool, bool)>,
     /// Directory the loaded `config.toml` lives in, if any. Used to place
     /// the cache DB alongside it.
     config_dir: Option<PathBuf>,
@@ -197,39 +219,48 @@ impl Config {
         &self.model_pricing
     }
 
-    /// Codex accounts, filtered by dormant flag.
+    /// Codex accounts enabled for refresh, filtered by dormant flag.
     pub fn codex_accounts(&self, include_dormant: bool) -> Vec<CodexAccount> {
         self.codex
             .iter()
-            .filter(|(_, dormant)| include_dormant || !dormant)
-            .map(|(a, _)| a.clone())
+            .filter(|(_, dormant, refresh)| *refresh && (include_dormant || !dormant))
+            .map(|(a, _, _)| a.clone())
             .collect()
     }
 
-    /// Claude Code accounts, filtered by dormant flag.
+    /// Claude Code accounts enabled for refresh, filtered by dormant flag.
     pub fn claude_accounts(&self, include_dormant: bool) -> Vec<ClaudeAccount> {
         self.claude
             .iter()
-            .filter(|(_, dormant)| include_dormant || !dormant)
-            .map(|(a, _)| a.clone())
+            .filter(|(_, dormant, refresh)| *refresh && (include_dormant || !dormant))
+            .map(|(a, _, _)| a.clone())
             .collect()
     }
 
-    /// pi accounts, filtered by dormant flag.
+    /// pi accounts enabled for refresh, filtered by dormant flag.
     pub fn pi_accounts(&self, include_dormant: bool) -> Vec<PiAccount> {
         self.pi
             .iter()
-            .filter(|(_, dormant)| include_dormant || !dormant)
-            .map(|(a, _)| a.clone())
+            .filter(|(_, dormant, refresh)| *refresh && (include_dormant || !dormant))
+            .map(|(a, _, _)| a.clone())
             .collect()
     }
 
-    /// OpenCode accounts, filtered by dormant flag.
+    /// OpenCode accounts enabled for refresh, filtered by dormant flag.
     pub fn opencode_accounts(&self, include_dormant: bool) -> Vec<OpenCodeAccount> {
         self.opencode
             .iter()
-            .filter(|(_, dormant)| include_dormant || !dormant)
-            .map(|(a, _)| a.clone())
+            .filter(|(_, dormant, refresh)| *refresh && (include_dormant || !dormant))
+            .map(|(a, _, _)| a.clone())
+            .collect()
+    }
+
+    /// Remote token-usage API servers enabled for refresh, filtered by dormant flag.
+    pub fn token_api_servers(&self, include_dormant: bool) -> Vec<TokenApiServer> {
+        self.token_api
+            .iter()
+            .filter(|(_, dormant, refresh)| *refresh && (include_dormant || !dormant))
+            .map(|(server, _, _)| server.clone())
             .collect()
     }
 
@@ -293,6 +324,17 @@ impl Config {
         {
             return Err("timeout values must be greater than 0".into());
         }
+        for server in &raw.token_api_servers {
+            if server.name.trim().is_empty() {
+                return Err("token_api_servers.name must not be empty".into());
+            }
+            if !server.url.starts_with("http://") && !server.url.starts_with("https://") {
+                return Err(format!(
+                    "token_api_servers.{} url must start with http:// or https://",
+                    server.name
+                ));
+            }
+        }
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let configured_cache = expand_home(&raw.cache.path);
@@ -322,6 +364,7 @@ impl Config {
                         codex_home: expand_home(&c.codex_home),
                     },
                     c.dormant,
+                    c.refresh,
                 )
             })
             .collect();
@@ -336,6 +379,7 @@ impl Config {
                         include_subagents: c.include_subagents,
                     },
                     c.dormant,
+                    c.refresh,
                 )
             })
             .collect();
@@ -350,6 +394,7 @@ impl Config {
                         pi_home: expand_home(&c.pi_home),
                     },
                     c.dormant,
+                    c.refresh,
                 )
             })
             .collect();
@@ -364,6 +409,22 @@ impl Config {
                         data_dir: expand_home(&c.data_dir),
                     },
                     c.dormant,
+                    c.refresh,
+                )
+            })
+            .collect();
+
+        let token_api = raw
+            .token_api_servers
+            .into_iter()
+            .map(|server| {
+                (
+                    TokenApiServer {
+                        name: server.name,
+                        url: server.url.trim_end_matches('/').to_string(),
+                    },
+                    server.dormant,
+                    server.refresh,
                 )
             })
             .collect();
@@ -379,6 +440,7 @@ impl Config {
             claude,
             pi,
             opencode,
+            token_api,
             config_dir: path.parent().map(|p| p.to_path_buf()),
         })
     }
@@ -412,6 +474,67 @@ fn expand_home(path: &str) -> PathBuf {
         home()
     } else {
         PathBuf::from(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_defaults_to_enabled_and_can_be_disabled_per_account() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+                [[codex_accounts]]
+                name = "enabled"
+                codex_home = "/enabled"
+
+                [[codex_accounts]]
+                name = "disabled"
+                codex_home = "/disabled"
+                refresh = false
+
+                [[token_api_servers]]
+                name = "remote"
+                url = "http://localhost:8787"
+                refresh = false
+            "#,
+        )
+        .unwrap();
+
+        assert!(raw.codex_accounts[0].refresh);
+        assert!(!raw.codex_accounts[1].refresh);
+        assert!(!raw.token_api_servers[0].refresh);
+    }
+
+    #[test]
+    fn disabled_refresh_accounts_are_filtered_even_when_dormant_accounts_are_included() {
+        let mut config = Config::default();
+        config.codex = vec![
+            (
+                CodexAccount {
+                    name: "enabled".into(),
+                    codex_home: "/enabled".into(),
+                },
+                false,
+                true,
+            ),
+            (
+                CodexAccount {
+                    name: "disabled".into(),
+                    codex_home: "/disabled".into(),
+                },
+                false,
+                false,
+            ),
+        ];
+
+        let names: Vec<_> = config
+            .codex_accounts(true)
+            .into_iter()
+            .map(|account| account.name)
+            .collect();
+        assert_eq!(names, ["enabled"]);
     }
 }
 
