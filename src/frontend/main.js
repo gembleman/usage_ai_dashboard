@@ -4,6 +4,7 @@ import {
   renderGlobalFilteredPanels,
   applyDashboardSettings,
   setGlobalRange,
+  setGlobalPeriod,
   setUsageTableAccount,
   setUsageTableModel,
   setUsageTableSource,
@@ -136,6 +137,18 @@ document.getElementById('globalRangeTabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab-btn');
   if (!btn) return;
   setGlobalRange(btn.dataset.range);
+});
+
+document.getElementById('monthSelect').addEventListener('change', (e) => {
+  setGlobalPeriod('month', e.target.value);
+});
+
+document.getElementById('weekSelect').addEventListener('change', (e) => {
+  setGlobalPeriod('week', e.target.value);
+});
+
+document.getElementById('daySelect').addEventListener('change', (e) => {
+  setGlobalPeriod('day', e.target.value);
 });
 
 loadAll().then(() => {

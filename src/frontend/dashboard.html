@@ -9,7 +9,6 @@
 <body>
 
 <h1>AI 사용량 대시보드</h1>
-<div class="subtitle">Codex, Claude Code, pi 및 OpenCode 로컬 세션 사용량을 계정 / 날짜 / 모델별로 집계합니다.</div>
 
 <div class="toolbar">
   <button id="refreshBtn">데이터 새로고침</button>
@@ -18,8 +17,8 @@
 
 <div class="overview-grid">
   <div class="panel">
-    <h2>요청 한도 (Codex &times; Claude Code)</h2>
-    <div id="rateLimits"></div>
+    <h2>요청 한도</h2>
+    <div id="rateLimits" role="region" aria-label="계정별 요청 한도" tabindex="0"></div>
   </div>
 
   <div class="overview-side">
@@ -31,6 +30,18 @@
         <button class="tab-btn" data-range="30d" role="tab" aria-selected="false">최근 1개월</button>
         <button class="tab-btn" data-range="365d" role="tab" aria-selected="false">최근 1년</button>
         <button class="tab-btn active" data-range="all" role="tab" aria-selected="true">전체</button>
+      </div>
+      <div class="filter-row">
+        <label for="monthSelect">월별 보기:</label>
+        <select id="monthSelect" aria-label="조회할 월">
+          <option value="">월 선택</option>
+        </select>
+        <label for="weekSelect">주간 보기:</label>
+        <select id="weekSelect" aria-label="조회할 주">
+          <option value="">주 선택</option>
+        </select>
+        <label for="daySelect">일간 보기:</label>
+        <input id="daySelect" type="date" aria-label="조회할 날짜">
       </div>
     </div>
 
@@ -72,7 +83,7 @@
 </div>
 
 <div class="panel">
-  <h2>상세 내역 (소스 &times; 계정 &times; 날짜 &times; 모델)</h2>
+  <h2>상세 내역</h2>
   <div class="tabs" id="sourceTabs" role="tablist" aria-label="소스 필터">
     <button class="tab-btn active" data-source="all" role="tab" aria-selected="true">전체</button>
     <button class="tab-btn" data-source="codex" role="tab" aria-selected="false">Codex</button>

@@ -1,4 +1,3 @@
-export const PALETTE = ['#7c9eff', '#4fd1a5', '#f5c26b', '#f47174', '#b98cf0', '#5bc8e0', '#e08fd0', '#9fd15a'];
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
 const USD_FORMAT = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -185,9 +184,17 @@ export function seriesKey(row) {
   return `${row.source}/${row.account}`;
 }
 
-export function colorFor(key, keys) {
-  const idx = keys.indexOf(key);
-  return PALETTE[idx % PALETTE.length];
+// Use the label itself so filtering, sorting and refreshes never reassign a color.
+export function colorFor(key) {
+  let hash = 2166136261;
+  for (const char of key) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  // Keep series colors in blue, purple, pink, red and amber ranges.
+  const hueIndex = (hash >>> 0) % 185;
+  const hue = hueIndex < 140 ? 210 + hueIndex : hueIndex - 140;
+  return `hsl(${hue} 64% 68%)`;
 }
 
 export function emptyNote(message) {

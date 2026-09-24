@@ -12,10 +12,26 @@ import { renderHourlyChart, renderModelChart, renderTrendChart, setModelChartMax
 const ACCOUNT_RANGE_DAYS = { '1d': 1, '7d': 7, '30d': 30, '365d': 365, all: null };
 
 // 대시보드 전역 기간 필터 상태. 트렌드 차트/계정별 합계/모델별 분포가 모두 이 값을 참조한다.
-let globalRangeState = { range: 'all', rawRows: [], rawHourlyRows: [] };
+let globalRangeState = { range: 'all', selected: '', rawRows: [], rawHourlyRows: [] };
+
+function weekStart(date) {
+  const day = Temporal.PlainDate.from(date);
+  return day.subtract({ days: day.dayOfWeek - 1 }).toString();
+}
+
+function filterSelectedPeriod(rows, range, selected, getDate) {
+  const weekEnd = range === 'week' ? Temporal.PlainDate.from(selected).add({ days: 6 }).toString() : '';
+  return rows.filter(row => {
+    const date = getDate(row);
+    if (range === 'month') return date.startsWith(`${selected}-`);
+    if (range === 'week') return date >= selected && date <= weekEnd;
+    return date === selected;
+  });
+}
 
 // 기준 날짜(가장 최근 데이터 날짜)로부터 range일 이내의 레코드만 남긴다.
-function filterUsageRowsByRange(usageRows, range) {
+function filterUsageRowsByRange(usageRows, range, selected) {
+  if (selected) return filterSelectedPeriod(usageRows, range, selected, row => row.date);
   const days = ACCOUNT_RANGE_DAYS[range];
   if (!days || usageRows.length === 0) return usageRows;
   const latest = usageRows.reduce((max, r) => (r.date > max ? r.date : max), usageRows[0].date);
@@ -32,7 +48,40 @@ export function renderGlobalFilteredPanels(usageRows, hourlyRows = []) {
     .map(row => ({ ...row, date: localDateForHour(row.hour) }))
     .filter(row => row.date);
   globalRangeState.rawHourlyRows = hourlyRows || [];
+  updatePeriodOptions();
   applyGlobalRangeFilter();
+}
+
+function updatePeriodOptions() {
+  const dates = [...new Set(globalRangeState.rawRows.map(row => row.date))].sort();
+  const months = [...new Set(dates.map(date => date.slice(0, 7)))].reverse();
+  const weeks = [...new Set(dates.map(weekStart))].sort().reverse();
+  const monthSelect = document.getElementById('monthSelect');
+  monthSelect.replaceChildren(new Option('월 선택', ''));
+  for (const month of months) {
+    const [year, number] = month.split('-');
+    monthSelect.add(new Option(`${year}년 ${Number(number)}월`, month));
+  }
+  const weekSelect = document.getElementById('weekSelect');
+  weekSelect.replaceChildren(new Option('주 선택', ''));
+  for (const start of weeks) {
+    const end = Temporal.PlainDate.from(start).add({ days: 6 }).toString();
+    weekSelect.add(new Option(`${start} ~ ${end}`, start));
+  }
+  const daySelect = document.getElementById('daySelect');
+  daySelect.min = dates[0] || '';
+  daySelect.max = dates.at(-1) || '';
+  if ((globalRangeState.range === 'month' && !months.includes(globalRangeState.selected)) ||
+      (globalRangeState.range === 'week' && !weeks.includes(globalRangeState.selected)) ||
+      (globalRangeState.range === 'day' &&
+        (!dates.length || globalRangeState.selected < dates[0] || globalRangeState.selected > dates.at(-1)))) {
+    globalRangeState.range = 'all';
+    globalRangeState.selected = '';
+  }
+  monthSelect.value = globalRangeState.range === 'month' ? globalRangeState.selected : '';
+  weekSelect.value = globalRangeState.range === 'week' ? globalRangeState.selected : '';
+  daySelect.value = globalRangeState.range === 'day' ? globalRangeState.selected : '';
+  updateRangeTabs();
 }
 
 function localDateForHour(hour) {
@@ -42,7 +91,8 @@ function localDateForHour(hour) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function filterHourlyRowsByRange(rows, range) {
+function filterHourlyRowsByRange(rows, range, selected) {
+  if (selected) return filterSelectedPeriod(rows, range, selected, row => localDateForHour(row.hour));
   const days = ACCOUNT_RANGE_DAYS[range];
   if (!days || rows.length === 0) return rows;
   const dated = rows.map(row => ({ row, date: localDateForHour(row.hour) })).filter(x => x.date);
@@ -54,24 +104,44 @@ function filterHourlyRowsByRange(rows, range) {
 
 export function setGlobalRange(range) {
   globalRangeState.range = range;
+  globalRangeState.selected = '';
+  clearPeriodControls();
   updateWithViewTransition(applyGlobalRangeFilter);
 
+  updateRangeTabs();
+}
+
+export function setGlobalPeriod(range, selected) {
+  globalRangeState.selected = selected;
+  globalRangeState.range = selected ? range : 'all';
+  clearPeriodControls(range);
+  updateWithViewTransition(applyGlobalRangeFilter);
+  updateRangeTabs();
+}
+
+function clearPeriodControls(activeRange = '') {
+  for (const [range, id] of [['month', 'monthSelect'], ['week', 'weekSelect'], ['day', 'daySelect']]) {
+    if (range !== activeRange) document.getElementById(id).value = '';
+  }
+}
+
+function updateRangeTabs() {
   document.querySelectorAll('#globalRangeTabs .tab-btn').forEach(btn => {
-    const active = btn.dataset.range === range;
+    const active = btn.dataset.range === globalRangeState.range;
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-selected', String(active));
   });
 }
 
 function applyGlobalRangeFilter() {
-  const ranged = filterUsageRowsByRange(globalRangeState.rawRows, globalRangeState.range);
+  const ranged = filterUsageRowsByRange(globalRangeState.rawRows, globalRangeState.range, globalRangeState.selected);
   // <synthetic>은 Claude Code가 토큰 사용 없는 턴(API 에러 등)에 남기는
   // 플레이스홀더 모델명이라 모든 패널에서 제외한다. 이전에는 상세 테이블만
   // 제외해 계정별 합계 turns가 불일치하는 문제가 있었다.
   const filtered = ranged.filter(r => r.model !== '<synthetic>');
   renderAccountTable(filtered);
   renderTrendChart(filtered);
-  renderHourlyChart(filterHourlyRowsByRange(globalRangeState.rawHourlyRows, globalRangeState.range));
+  renderHourlyChart(filterHourlyRowsByRange(globalRangeState.rawHourlyRows, globalRangeState.range, globalRangeState.selected));
   renderModelChart(filtered);
   // 상세 내역 테이블도 전역 기간 필터를 따른다. renderUsageTable은 raw만 교체하고
   // 기존 source/account/model 선택은 usageTableState와 옵션 갱신 함수가 보존한다

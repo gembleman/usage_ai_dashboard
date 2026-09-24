@@ -27,6 +27,7 @@ refresh_seconds = 120
 anthropic_seconds = 8
 
 # 모델별 100만 토큰당 USD 가격
+# GPT-6 Sol/Luna의 Standard 단기 컨텍스트 요금은 기본 제공되며, 아래 항목으로 덮어쓸 수 있습니다.
 [model_pricing]
 "claude-opus-5" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
 "claude-opus-4-8" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 25.0 }
@@ -35,6 +36,8 @@ anthropic_seconds = 8
 "claude-sonnet-4-6" = { input = 3.0, cached_input = 0.3, cache_creation_input = 3.75, output = 15.0 }
 "claude-fable-5" = { input = 10.0, cached_input = 1.0, cache_creation_input = 12.5, output = 50.0 }
 "claude-haiku-4-5" = { input = 1.0, cached_input = 0.1, cache_creation_input = 1.25, output = 5.0 }
+"gpt-6-sol" = { input = 2.0, cached_input = 0.2, cache_creation_input = 2.5, output = 10.0 }
+"gpt-6-luna" = { input = 0.1, cached_input = 0.01, cache_creation_input = 0.125, output = 0.5 }
 "gpt-5.6-sol" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 30.0 }
 "gpt-5.6-terra" = { input = 2.5, cached_input = 0.25, cache_creation_input = 3.125, output = 15.0 }
 "gpt-5.5" = { input = 5.0, cached_input = 0.5, cache_creation_input = 6.25, output = 30.0 }
@@ -106,6 +109,11 @@ pi는 로그에 요청 한도(rate limit) 정보를 남기지 않으므로 한�
 프론트엔드 파일은 `server.frontend_dir`에서 실행 중에 읽습니다. 따라서 HTML,
 CSS, JavaScript를 수정할 때 Rust를 다시 컴파일할 필요가 없습니다. 배포 시에는
 이 디렉터리도 실행 파일 및 `config.toml`과 함께 복사해야 합니다.
+
+기간 필터에서 특정 월, 주 또는 날짜를 선택하면 해당 기간의 사용량을 모든
+사용량 패널과 상세 내역에 적용합니다. 월과 주 목록은 기록이 있는 기간에서 만듭니다.
+주간은 브라우저 현지 날짜를 기준으로 월요일부터 일요일까지입니다.
+그래프 색상은 계정 또는 모델 이름을 기준으로 고정됩니다.
 
 ### 지원 브라우저
 

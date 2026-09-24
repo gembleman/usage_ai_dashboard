@@ -214,7 +214,7 @@ impl Config {
         self.config_dir.as_deref()
     }
 
-    /// Model prices from `config.toml`.
+    /// Model prices from `config.toml`, with built-in defaults for GPT-6 Sol and Luna.
     pub fn model_pricing(&self) -> &HashMap<String, ModelPricing> {
         &self.model_pricing
     }
@@ -336,6 +336,8 @@ impl Config {
             }
         }
 
+        let model_pricing = with_builtin_pricing(raw.model_pricing);
+
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let configured_cache = expand_home(&raw.cache.path);
         let cache_path = if configured_cache.is_absolute() {
@@ -435,7 +437,7 @@ impl Config {
             cache_path,
             frontend_dir,
             timeouts: raw.timeouts,
-            model_pricing: raw.model_pricing,
+            model_pricing,
             codex,
             claude,
             pi,
@@ -466,6 +468,26 @@ fn default_true() -> bool {
     true
 }
 
+fn with_builtin_pricing(
+    mut pricing: HashMap<String, ModelPricing>,
+) -> HashMap<String, ModelPricing> {
+    // Standard short-context USD prices per million tokens. A config entry
+    // takes precedence so users can adjust the estimate for their service tier.
+    pricing.entry("gpt-6-sol".into()).or_insert(ModelPricing {
+        input: 2.0,
+        cached_input: 0.2,
+        cache_creation_input: 2.5,
+        output: 10.0,
+    });
+    pricing.entry("gpt-6-luna".into()).or_insert(ModelPricing {
+        input: 0.1,
+        cached_input: 0.01,
+        cache_creation_input: 0.125,
+        output: 0.5,
+    });
+    pricing
+}
+
 /// Expand a leading `~` to the user's home directory.
 fn expand_home(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
@@ -480,6 +502,21 @@ fn expand_home(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_gpt6_prices_fill_missing_entries_without_overriding_config() {
+        let custom = ModelPricing {
+            input: 3.0,
+            cached_input: 0.3,
+            cache_creation_input: 3.75,
+            output: 15.0,
+        };
+        let pricing = with_builtin_pricing(HashMap::from([("gpt-6-sol".into(), custom)]));
+        assert_eq!(pricing["gpt-6-sol"].input, 3.0);
+        assert_eq!(pricing["gpt-6-luna"].cached_input, 0.01);
+        assert_eq!(pricing["gpt-6-luna"].cache_creation_input, 0.125);
+        assert_eq!(pricing["gpt-6-luna"].output, 0.5);
+    }
 
     #[test]
     fn refresh_defaults_to_enabled_and_can_be_disabled_per_account() {
