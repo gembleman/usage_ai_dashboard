@@ -124,16 +124,8 @@ export const fmtUsdPartial = (v, partial = false) => {
 const tooltip = document.getElementById('tooltip');
 
 export function showTooltip(evt, html) {
-  if (typeof tooltip.setHTML === 'function') {
-    tooltip.setHTML(html);
-  } else {
-    tooltip.innerHTML = html;
-  }
-  if (typeof tooltip.showPopover === 'function') {
-    if (!tooltip.matches(':popover-open')) tooltip.showPopover();
-  } else {
-    tooltip.style.display = 'block';
-  }
+  tooltip.setHTML(html);
+  if (!tooltip.matches(':popover-open')) tooltip.showPopover();
 
   // FocusEvent(키보드 포커스)에는 clientX/Y가 없으므로 이벤트 대상 요소의
   // 중심 좌표를 앵커로 폴백한다.
@@ -165,15 +157,11 @@ export function showTooltip(evt, html) {
   tooltip.style.top = top + 'px';
 }
 export function hideTooltip() {
-  if (typeof tooltip.hidePopover === 'function') {
-    if (tooltip.matches(':popover-open')) tooltip.hidePopover();
-  } else {
-    tooltip.style.display = 'none';
-  }
+  if (tooltip.matches(':popover-open')) tooltip.hidePopover();
 }
 
 export function updateWithViewTransition(update) {
-  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
     update();
   } else {
     document.startViewTransition(update);

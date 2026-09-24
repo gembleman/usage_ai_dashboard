@@ -117,9 +117,10 @@ CSS, JavaScript를 수정할 때 Rust를 다시 컴파일할 필요가 없습니
 
 ### 지원 브라우저
 
-Chrome, Edge, Firefox, Safari의 최신 안정 버전만 지원합니다. 대시보드는
-`Temporal`, `Intl.DurationFormat`, `Map.groupBy`, `AbortSignal.timeout` 및
-`AbortSignal.any`를 폴리필 없이 사용하므로 구형 브라우저는 지원하지 않습니다.
+Chromium 153만 지원합니다. 웹 UI는 폴리필과 구형 브라우저용 분기 없이
+`Temporal`, `Intl.DurationFormat`, `Map.groupBy`, `AbortSignal.timeout`,
+`AbortSignal.any`, Popover, View Transition 및 `Element.setHTML()`을 사용합니다.
+`Element.setHTML()`을 위해 로컬 주소 또는 HTTPS에서 접속해야 합니다.
 
 ## 통계를 보고 얻은 통찰
 6개월간 사용량이 대략 100억 토큰.  
