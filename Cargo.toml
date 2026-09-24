@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = { version = "1.1.2", default-features = false, features = [
+toml = { version = "1.1.6", default-features = false, features = [
     "parse",
     "serde",
 ] }
@@ -22,10 +22,10 @@ axum = { version = "0.8", default-features = false, features = [
     "tokio",
 ] }
 tokio = { version = "1", features = ["rt", "net", "fs"] }
-rusqlite = { version = "0.40.1", default-features = false, features = [
+rusqlite = { version = "0.40.2", default-features = false, features = [
     "bundled",
 ] }
-reqwest = { version = "0.13.4", default-features = false, features = [
+reqwest = { version = "0.13.5", default-features = false, features = [
     "rustls-no-provider",
     "blocking",
     "json",
