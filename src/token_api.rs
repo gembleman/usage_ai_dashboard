@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 use crate::model::{Source, UsageRecord};
 
@@ -21,7 +21,8 @@ struct RecordsResponse {
 #[derive(Debug, Deserialize)]
 struct RemoteRecord {
     source: String,
-    timestamp: DateTime<Utc>,
+    #[serde(deserialize_with = "crate::timestamp::deserialize")]
+    timestamp: OffsetDateTime,
     model: Option<String>,
     cost_usd: Option<f64>,
     input: u64,

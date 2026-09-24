@@ -13,9 +13,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
+use time::OffsetDateTime;
 use walkdir::WalkDir;
 
 use crate::model::{Source, UsageRecord};
@@ -221,7 +221,9 @@ fn parse_message_json(
     let Some(created_ms) = message.time.created.or(fallback_created_ms) else {
         return;
     };
-    let Some(timestamp) = DateTime::<Utc>::from_timestamp_millis(created_ms) else {
+    let Ok(timestamp) =
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(created_ms) * 1_000_000)
+    else {
         return;
     };
 

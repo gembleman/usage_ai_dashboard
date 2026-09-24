@@ -28,8 +28,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use time::OffsetDateTime;
 use walkdir::WalkDir;
 
 use crate::model::{Source, UsageRecord};
@@ -85,8 +85,8 @@ struct PiLine {
     kind: Option<String>,
     #[serde(default)]
     id: Option<String>,
-    #[serde(default)]
-    timestamp: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "crate::timestamp::deserialize_option")]
+    timestamp: Option<OffsetDateTime>,
     #[serde(default)]
     message: Option<PiMessage>,
 }

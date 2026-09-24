@@ -315,7 +315,7 @@ mod tests {
         UsageRecord {
             source: Source::Codex,
             account: "user01".to_string(),
-            timestamp: timestamp.parse().unwrap(),
+            timestamp: crate::timestamp::parse(timestamp).unwrap(),
             model: Some(model.to_string()),
             cost_usd: None,
             input_tokens: total_tokens,

@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, params};
+use time::OffsetDateTime;
 
 use crate::model::{
     ExtraUsageSnapshot, RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord,
@@ -342,7 +342,7 @@ impl Cache {
         records: &[UsageRecord],
         rate_limits: &[RateLimitSnapshot],
     ) -> rusqlite::Result<()> {
-        let mut earliest: HashMap<(Source, &str), DateTime<Utc>> = HashMap::new();
+        let mut earliest: HashMap<(Source, &str), OffsetDateTime> = HashMap::new();
         for r in records {
             earliest
                 .entry((r.source, r.account.as_str()))
@@ -415,7 +415,7 @@ impl Cache {
                 stmt.execute(params![
                     s.source.to_string(),
                     s.account,
-                    s.observed_at.to_rfc3339(),
+                    crate::timestamp::format(s.observed_at),
                     s.limit_id,
                     s.plan_type,
                     s.rate_limit_reached_type,
@@ -535,20 +535,17 @@ impl Cache {
 /// "2026-06-01T12:00:00.000Z". Must match the v4 migration's
 /// strftime('%Y-%m-%dT%H:%M:%fZ', ...) output so old and new rows compare
 /// lexicographically == chronologically.
-fn to_db_timestamp(t: &DateTime<Utc>) -> String {
-    t.to_rfc3339_opts(SecondsFormat::Millis, true)
+fn to_db_timestamp(t: &OffsetDateTime) -> String {
+    crate::timestamp::db_format(*t)
 }
 
-fn parse_rfc3339(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
+fn parse_rfc3339(s: &str) -> OffsetDateTime {
+    crate::timestamp::parse(s).unwrap_or_else(|_| OffsetDateTime::now_utc())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn open_mem() -> Cache {
         Cache::init(Connection::open_in_memory().unwrap()).unwrap()
@@ -558,7 +555,7 @@ mod tests {
         UsageRecord {
             source,
             account: account.to_string(),
-            timestamp: Utc.with_ymd_and_hms(2026, 6, day, 12, 0, 0).unwrap(),
+            timestamp: parse_rfc3339(&format!("2026-06-{day:02}T12:00:00Z")),
             model: None,
             cost_usd: None,
             input_tokens,
@@ -621,7 +618,7 @@ mod tests {
         RateLimitSnapshot {
             source,
             account: account.to_string(),
-            observed_at: Utc.with_ymd_and_hms(2026, 7, 8, 12, 0, 0).unwrap(),
+            observed_at: parse_rfc3339("2026-07-08T12:00:00Z"),
             limit_id: None,
             plan_type: None,
             rate_limit_reached_type: None,
@@ -674,7 +671,7 @@ mod tests {
         let snap = RateLimitSnapshot {
             source: Source::ClaudeCode,
             account: "user02".to_string(),
-            observed_at: Utc.with_ymd_and_hms(2026, 7, 8, 12, 0, 0).unwrap(),
+            observed_at: parse_rfc3339("2026-07-08T12:00:00Z"),
             limit_id: None,
             plan_type: Some("pro".to_string()),
             rate_limit_reached_type: None,
@@ -749,9 +746,9 @@ mod tests {
     fn detailed_aggregate_keeps_utc_hour_boundaries() {
         let mut cache = open_mem();
         let mut first = record(Source::Codex, "user01", 1, 10);
-        first.timestamp = Utc.with_ymd_and_hms(2026, 8, 1, 23, 55, 0).unwrap();
+        first.timestamp = parse_rfc3339("2026-08-01T23:55:00Z");
         let mut second = record(Source::Codex, "user01", 2, 20);
-        second.timestamp = Utc.with_ymd_and_hms(2026, 8, 2, 0, 5, 0).unwrap();
+        second.timestamp = parse_rfc3339("2026-08-02T00:05:00Z");
         cache.save(&[first, second], &[]).unwrap();
 
         let (aggregate, _, _, _) = cache.load_aggregate().unwrap().unwrap();

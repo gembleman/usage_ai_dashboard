@@ -14,8 +14,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use time::OffsetDateTime;
 use walkdir::WalkDir;
 
 use crate::model::{
@@ -60,8 +60,8 @@ struct MessageBody {
 struct TranscriptLine {
     #[serde(rename = "type", default)]
     kind: Option<String>,
-    #[serde(default)]
-    timestamp: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "crate::timestamp::deserialize_option")]
+    timestamp: Option<OffsetDateTime>,
     #[serde(default, rename = "isSidechain")]
     is_sidechain: bool,
     #[serde(default)]
@@ -294,8 +294,8 @@ fn read_oauth_credentials(account: &ClaudeAccount) -> Option<OauthCredentials> {
     oauth.access_token.as_ref()?;
 
     if let Some(expires_at_ms) = oauth.expires_at {
-        let now_ms = Utc::now().timestamp_millis();
-        if expires_at_ms <= now_ms {
+        let now_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+        if i128::from(expires_at_ms) <= now_ms {
             // Expired: do not attempt the call (and never refresh).
             eprintln!(
                 "claude_code/{}: OAuth token expired; skipping rate-limit fetch (no refresh by design).",
@@ -316,8 +316,8 @@ fn to_window_snapshot(w: &UsageWindow, window_minutes: u64) -> Option<RateLimitW
     let resets_at = w
         .resets_at
         .as_deref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.timestamp())
+        .and_then(|s| crate::timestamp::parse(s).ok())
+        .map(|dt| dt.unix_timestamp())
         .unwrap_or(0);
     Some(RateLimitWindowSnapshot {
         used_percent,
@@ -417,7 +417,7 @@ pub fn fetch_rate_limit_snapshot(
     Some(RateLimitSnapshot {
         source: Source::ClaudeCode,
         account: account.name.clone(),
-        observed_at: Utc::now(),
+        observed_at: OffsetDateTime::now_utc(),
         limit_id: None,
         plan_type,
         rate_limit_reached_type: None,
@@ -523,9 +523,9 @@ mod tests {
         // 2026-07-08T14:20:00Z -> epoch seconds.
         assert_eq!(
             primary.resets_at,
-            DateTime::parse_from_rfc3339("2026-07-08T14:20:00.472088+00:00")
+            crate::timestamp::parse("2026-07-08T14:20:00.472088+00:00")
                 .unwrap()
-                .timestamp()
+                .unix_timestamp()
         );
 
         let secondary = usage

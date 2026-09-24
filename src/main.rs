@@ -8,11 +8,12 @@ mod pi;
 mod server;
 #[cfg(test)]
 mod test_util;
+mod timestamp;
 mod token_api;
 
 use std::collections::BTreeMap;
 
-use chrono::Datelike;
+use time::OffsetDateTime;
 
 use crate::config::Config;
 use crate::model::{RateLimitSnapshot, Source, UsageRecord};
@@ -79,7 +80,7 @@ pub fn aggregate(records: &[UsageRecord]) -> BTreeMap<AggKey, AggTotals> {
         let date = format!(
             "{:04}-{:02}-{:02}",
             r.timestamp.year(),
-            r.timestamp.month(),
+            u8::from(r.timestamp.month()),
             r.timestamp.day()
         );
         let model = r.model.clone().unwrap_or_else(|| "unknown".to_string());
@@ -106,7 +107,7 @@ pub fn aggregate_detailed_hourly(
 ) -> BTreeMap<DetailedHourlyAggKey, AggTotals> {
     let mut map: BTreeMap<DetailedHourlyAggKey, AggTotals> = BTreeMap::new();
     for r in records {
-        let hour = r.timestamp.format("%Y-%m-%dT%H:00:00Z").to_string();
+        let hour = timestamp::hour(r.timestamp);
         let model = r.model.clone().unwrap_or_else(|| "unknown".to_string());
         let entry = map
             .entry((r.source, r.account.clone(), hour, model))
@@ -135,7 +136,7 @@ pub fn aggregate_hourly(records: &[UsageRecord]) -> BTreeMap<HourlyAggKey, AggTo
         if r.model.as_deref() == Some("<synthetic>") {
             continue;
         }
-        let hour = r.timestamp.format("%Y-%m-%dT%H:00:00Z").to_string();
+        let hour = timestamp::hour(r.timestamp);
         let entry = map.entry((r.source, r.account.clone(), hour)).or_default();
         entry.input_tokens += r.input_tokens;
         entry.cached_input_tokens += r.cached_input_tokens;
@@ -209,7 +210,7 @@ fn print_rate_limit_snapshots(snapshots: &[RateLimitSnapshot]) {
             "source={} account={} observed_at={} limit_id={:?} plan_type={:?}",
             snap.source,
             snap.account,
-            snap.observed_at.to_rfc3339(),
+            timestamp::format(snap.observed_at),
             snap.limit_id,
             snap.plan_type
         );
@@ -272,9 +273,9 @@ fn print_rate_limit_snapshots(snapshots: &[RateLimitSnapshot]) {
 }
 
 fn format_epoch(secs: i64) -> String {
-    match chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0) {
-        Some(dt) => dt.to_rfc3339(),
-        None => "invalid".to_string(),
+    match OffsetDateTime::from_unix_timestamp(secs) {
+        Ok(dt) => timestamp::format(dt),
+        Err(_) => "invalid".to_string(),
     }
 }
 

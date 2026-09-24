@@ -15,8 +15,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use walkdir::WalkDir;
 
 use crate::model::{RateLimitSnapshot, RateLimitWindowSnapshot, Source, UsageRecord};
@@ -90,8 +90,8 @@ struct EventMsgPayload {
 
 #[derive(Debug, Deserialize)]
 struct RolloutLine {
-    #[serde(default)]
-    timestamp: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "crate::timestamp::deserialize_option")]
+    timestamp: Option<OffsetDateTime>,
     #[serde(rename = "type", default)]
     kind: Option<String>,
     #[serde(default)]
@@ -360,7 +360,7 @@ fn app_server_snapshot(
     Some(RateLimitSnapshot {
         source: Source::Codex,
         account: account.name.clone(),
-        observed_at: Utc::now(),
+        observed_at: OffsetDateTime::now_utc(),
         limit_id: rl.limit_id,
         plan_type: rl.plan_type,
         rate_limit_reached_type: rl.rate_limit_reached_type,
@@ -605,8 +605,8 @@ mod tests {
 
         let snapshot = snapshot.unwrap();
         assert_eq!(
-            snapshot.observed_at.to_rfc3339(),
-            "2026-06-26T15:02:00+00:00"
+            snapshot.observed_at,
+            crate::timestamp::parse("2026-06-26T15:02:00+00:00").unwrap()
         );
         assert_eq!(snapshot.primary.as_ref().unwrap().window_minutes, 300);
         assert_eq!(snapshot.primary.as_ref().unwrap().used_percent, 44.0);

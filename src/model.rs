@@ -1,8 +1,8 @@
 //! Common normalized types shared between the Codex, Claude Code, pi, and OpenCode
 //! parsers.
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
+use time::OffsetDateTime;
 
 /// Which CLI a usage record originated from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -46,7 +46,8 @@ impl std::str::FromStr for Source {
 pub struct UsageRecord {
     pub source: Source,
     pub account: String,
-    pub timestamp: DateTime<Utc>,
+    #[serde(serialize_with = "crate::timestamp::serialize")]
+    pub timestamp: OffsetDateTime,
     pub model: Option<String>,
     /// Cost in USD as reported by the CLI itself, when it records one.
     /// pi and OpenCode do — they bill through providers whose prices
@@ -101,7 +102,8 @@ pub struct RateLimitSnapshot {
     pub source: Source,
     pub account: String,
     /// Timestamp of the token_count event this snapshot was taken from.
-    pub observed_at: DateTime<Utc>,
+    #[serde(serialize_with = "crate::timestamp::serialize")]
+    pub observed_at: OffsetDateTime,
     pub limit_id: Option<String>,
     pub plan_type: Option<String>,
     pub rate_limit_reached_type: Option<String>,
