@@ -172,17 +172,16 @@ export function seriesKey(row) {
   return `${row.source}/${row.account}`;
 }
 
-// Use the label itself so filtering, sorting and refreshes never reassign a color.
-export function colorFor(key) {
-  let hash = 2166136261;
-  for (const char of key) {
-    hash ^= char.codePointAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  // Keep series colors in blue, purple, pink, red and amber ranges.
-  const hueIndex = (hash >>> 0) % 185;
-  const hue = hueIndex < 140 ? 210 + hueIndex : hueIndex - 140;
-  return `hsl(${hue} 64% 68%)`;
+// Categorical colors are ordered to keep neighboring series visually distinct
+// on the dark panel. Charts and their legends use the same series index.
+const CHART_COLORS = [
+  '#57b8ff', '#ffb65c', '#8be0a4', '#c9a7ff',
+  '#ff8093', '#62d6d0', '#f5db70', '#f395d0',
+  '#a1bdff', '#b8da70', '#ff9d70', '#b7d9e8',
+];
+
+export function chartColor(index) {
+  return CHART_COLORS[index % CHART_COLORS.length];
 }
 
 export function emptyNote(message) {

@@ -7,7 +7,7 @@ import {
   rowCostUsd,
   updateWithViewTransition,
 } from './util.js';
-import { renderHourlyChart, renderModelChart, renderTrendChart, setModelChartMaxItems } from './charts.js';
+import { renderHourlyChart, renderModelChart, renderTrendChart, setChartColorDomains, setModelChartMaxItems } from './charts.js';
 
 const ACCOUNT_RANGE_DAYS = { '1d': 1, '7d': 7, '30d': 30, '365d': 365, all: null };
 
@@ -48,6 +48,7 @@ export function renderGlobalFilteredPanels(usageRows, hourlyRows = []) {
     .map(row => ({ ...row, date: localDateForHour(row.hour) }))
     .filter(row => row.date);
   globalRangeState.rawHourlyRows = hourlyRows || [];
+  setChartColorDomains(globalRangeState.rawRows, globalRangeState.rawHourlyRows);
   updatePeriodOptions();
   applyGlobalRangeFilter();
 }

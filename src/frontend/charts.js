@@ -1,5 +1,5 @@
 import {
-  colorFor,
+  chartColor,
   emptyNote,
   escapeHtml,
   fmtKo,
@@ -17,6 +17,32 @@ let trendChartState = null;
 let hourlyChartState = null;
 let modelChartState = null;
 let modelChartMaxItems = 8;
+let seriesColorIndices = new Map();
+let modelColorIndices = new Map();
+const LINE_PATTERNS = [
+  { dash: '', borderStyle: 'solid' },
+  { dash: '8 4', borderStyle: 'dashed' },
+  { dash: '2 4', borderStyle: 'dotted' },
+];
+
+// Assign colors from the complete data set so range filters do not change an
+// account's or model's color. The daily and hourly charts share one domain.
+export function setChartColorDomains(usageRows, hourlyRows) {
+  const series = [...new Set([...usageRows, ...hourlyRows].map(seriesKey))].sort();
+  seriesColorIndices = new Map(series.map((key, index) => [key, index]));
+
+  const modelTotals = new Map();
+  for (const row of usageRows) {
+    modelTotals.set(row.model, (modelTotals.get(row.model) || 0) + row.total_tokens);
+  }
+  const models = [...modelTotals].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  modelColorIndices = new Map(models.map(([model], index) => [model, index]));
+}
+
+const seriesColor = (key, fallbackIndex) => chartColor(seriesColorIndices.get(key) ?? fallbackIndex);
+const modelColor = (model, fallbackIndex) => model === '기타'
+  ? '#c4cbd6'
+  : chartColor(modelColorIndices.get(model) ?? fallbackIndex);
 
 export function setModelChartMaxItems(value) {
   if (Number.isInteger(value) && value >= 2) modelChartMaxItems = value;
@@ -219,7 +245,7 @@ export function renderTrendChart(rows) {
   // 시리즈별로 한 줄씩 겹쳐 그린다(overlay, not stacked) — 시리즈 간 비교가 목적.
   // 데이터가 없는 날짜는 선을 끊어 "사용 안 함(0)"과 "데이터 없음"을 구분한다.
   keys.forEach((k, keyIdx) => {
-    const color = colorFor(k);
+    const color = seriesColor(k, keyIdx);
     let path = '';
     let started = false;
     dates.forEach((d, i) => {
@@ -233,7 +259,10 @@ export function renderTrendChart(rows) {
       path += (started ? 'L' : 'M') + px + ',' + py + ' ';
       started = true;
     });
-    svg += `<path d="${path.trim()}" fill="none" stroke="${color}" stroke-width="2"/>`;
+    const patternIndex = seriesColorIndices.get(k) ?? keyIdx;
+    const { dash } = LINE_PATTERNS[patternIndex % LINE_PATTERNS.length];
+    svg += `<path d="${path.trim()}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round"` +
+      (dash ? ` stroke-dasharray="${dash}"` : '') + '/>';
     dates.forEach((d, i) => {
       const raw = byDateSeries[d][k];
       if (raw === undefined) return; // 데이터 없는 날짜는 포인트를 생략한다.
@@ -248,11 +277,16 @@ export function renderTrendChart(rows) {
   container.innerHTML = svg;
 
   const fragment = document.createDocumentFragment();
-  keys.forEach(k => {
-    const color = colorFor(k);
+  keys.forEach((k, keyIdx) => {
+    const color = seriesColor(k, keyIdx);
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.append(swatch(color), document.createTextNode(k));
+    const line = document.createElement('span');
+    line.className = 'swatch-line';
+    line.style.borderColor = color;
+    const patternIndex = seriesColorIndices.get(k) ?? keyIdx;
+    line.style.borderStyle = LINE_PATTERNS[patternIndex % LINE_PATTERNS.length].borderStyle;
+    item.append(line, document.createTextNode(k));
     fragment.appendChild(item);
   });
   legend.replaceChildren(fragment);
@@ -316,7 +350,7 @@ export function renderHourlyChart(rows) {
       const top = yFor(cumulative);
       const label = `${key} — ${String(hour).padStart(2, '0')}:00: ${fmtKo(value)} 토큰`;
       svg += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, bottom - top).toFixed(1)}" ` +
-        `fill="${colorFor(key)}" class="hourly-segment" tabindex="0" data-hour="${hour}" data-key-idx="${keyIdx}" aria-label="${escapeHtml(label)}"></rect>`;
+        `fill="${seriesColor(key, keyIdx)}" stroke="var(--panel)" stroke-width="1" class="hourly-segment" tabindex="0" data-hour="${hour}" data-key-idx="${keyIdx}" aria-label="${escapeHtml(label)}"></rect>`;
     });
     if (hour % 2 === 0) {
       svg += `<text x="${(x + barW / 2).toFixed(1)}" y="${height - 8}" text-anchor="middle">${String(hour).padStart(2, '0')}</text>`;
@@ -326,10 +360,10 @@ export function renderHourlyChart(rows) {
   container.innerHTML = svg;
 
   const fragment = document.createDocumentFragment();
-  keys.forEach(key => {
+  keys.forEach((key, keyIdx) => {
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.append(swatch(colorFor(key)), document.createTextNode(key));
+    item.append(swatch(seriesColor(key, keyIdx)), document.createTextNode(key));
     fragment.appendChild(item);
   });
   legend.replaceChildren(fragment);
@@ -404,13 +438,13 @@ export function renderModelChart(rows) {
     const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
     const x2 = cx + r * Math.cos(nextAngle), y2 = cy + r * Math.sin(nextAngle);
     const largeArc = frac > 0.5 ? 1 : 0;
-    const color = colorFor(model);
+    const color = modelColor(model, i);
     const path = frac >= 0.9999
       ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.01} ${cy - r} Z`
       : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
     const pct = (frac * 100).toFixed(1);
     const label = `${model}: ${fmtKo(val)} 토큰 (${pct}%)`;
-    svg += `<path d="${path}" fill="${color}" stroke="var(--panel)" stroke-width="1.5" class="slice" ` +
+    svg += `<path d="${path}" fill="${color}" stroke="var(--panel)" stroke-width="3" class="slice" ` +
       `tabindex="0" data-entry-idx="${i}" aria-label="${escapeHtml(label)}"><title>${escapeHtml(label)}</title></path>`;
     angle = nextAngle;
   });
@@ -439,7 +473,7 @@ export function renderModelChart(rows) {
   const fragment = document.createDocumentFragment();
   fragment.appendChild(totalItem);
   entries.forEach(([model, val], i) => {
-    const color = colorFor(model);
+    const color = modelColor(model, i);
     const pct = ((val / total) * 100).toFixed(1);
     const cost = costByModel.get(model);
     const item = document.createElement('div');
