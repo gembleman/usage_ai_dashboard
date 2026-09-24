@@ -7,12 +7,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::cache::Cache;
@@ -299,7 +299,8 @@ async fn post_refresh(State(state): State<SharedState>) -> impl IntoResponse {
 
     (
         StatusCode::OK,
-        Json(RefreshResponse {
+        [(axum::http::header::CONTENT_TYPE, JSON_CONTENT_TYPE)],
+        to_json_bytes(&RefreshResponse {
             status: "ok",
             record_count,
             rate_limit_count,

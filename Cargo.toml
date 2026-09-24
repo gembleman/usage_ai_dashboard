@@ -14,7 +14,6 @@ walkdir = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 axum = { version = "0.8", default-features = false, features = [
     "http1",
-    "json",
     "tokio",
 ] }
 tokio = { version = "1", features = ["rt", "net", "fs"] }
